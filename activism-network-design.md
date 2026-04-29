@@ -172,7 +172,7 @@ The app has three tabs, Signal-style:
 
 ### Projects in the app
 
-Projects open as full-screen views with their own internal navigation (tabs, maps, feeds, forms — whatever the Project needs). They are visually distinct from chat views. Any group chats that a Project manages appear normally in the Chats tab; the Project view is for the non-chat parts of the Project (maps, checklists, dashboards, sign-up flows). A small server/project label inside a conversation view links back to the originating Project for users who want to navigate the other direction.
+Projects open as full-screen views with their own internal navigation (tabs, maps, feeds, forms — whatever the Project needs). They are visually distinct from chat views. Any group chats that a Project manages appear normally in the Chats tab; the Project view is for the non-chat parts of the Project (maps, checklists, dashboards, sign-up flows). Projects and chats are deep-linkable in both directions: a conversation view shows the Project it belongs to and tapping opens it, and a Project view can link directly into any of its chats. Anyone — and particularly bots — can send a Project link in a chat message; tapping it opens that Project directly in the app. This is the primary way bots surface Project UI to users ("tap here to see the Action Day map," "your team checklist needs attention").
 
 ---
 
