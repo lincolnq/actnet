@@ -1,5 +1,7 @@
 # Activism Social Network — Design Sketch
 
+Goal: Make organizing at scale more practical, more effective and more fun!
+
 ## Premise
 
 A social network whose primary acquisition vector is participation in collective action. People install the app because a Project (a canvass, a strike, a rally, a phonebank) requires it; they stay because the network captures the social connections they form through that participation.
