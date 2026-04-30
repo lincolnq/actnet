@@ -8,5 +8,6 @@ The design centers on Signal-quality encrypted messaging — a unified inbox of 
 
 ## Docs
 
-- [Design](activism-network-design.md) — goals, architecture, threat model, and first-party Project designs
-- [Technical implementation](technical-implementation.md) — tech stack, cryptographic approach, and staged build plan
+- [01 — Design](docs/01-design.md) — goals, architecture, threat model, and first-party Project designs
+- [02 — Technical implementation](docs/02-technical-implementation.md) — tech stack, cryptographic approach, repository structure, and staged build plan
+- [03 — Core API sketch](docs/03-core-api-sketch.md) — API design for the `crypto` and `store` crates

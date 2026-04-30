@@ -9,6 +9,114 @@ Two principles govern every technical decision here:
 
 ---
 
+## Repository structure
+
+The repository is a monorepo. The Rust codebase is the platform core — the cryptography, the homeserver, the mobile shared library, the push relay — but first-party Projects may be written in any language, and the mobile UI layers are Swift and Kotlin. Rust does not own the root.
+
+```
+actnet/
+├── core/                     # Rust — Cargo workspace root
+├── mobile/
+│   ├── ios/                  # Swift/SwiftUI
+│   └── android/              # Kotlin/Jetpack Compose
+├── projects/
+│   ├── sdk/                  # HTTP client libraries for Project developers
+│   ├── channel-directory/
+│   ├── team-assignment/
+│   ├── action-day/
+│   ├── qa-bot/
+│   ├── collab-docs/
+│   └── engagement-tracking/
+├── infra/
+│   ├── docker/
+│   └── migrations/           # versioned PostgreSQL migrations
+└── docs/
+```
+
+### `core/` — the Rust workspace
+
+Everything security-critical is here: cryptography, local storage, networking, the homeserver, the push relay, and the UniFFI boundary that mobile UI layers call into. The workspace is organized into crates with clear boundaries so that security-sensitive code can be audited in isolation.
+
+```
+core/
+└── crates/
+    ├── types/          # shared serializable types: DIDs, AccountId, DeviceId,
+    │                   # message envelopes, group identifiers. No logic, no heavy
+    │                   # dependencies. Everything else imports this.
+    │
+    ├── crypto/         # libsignal wrappers. X3DH key generation and session
+    │                   # initialization, Double Ratchet encrypt/decrypt, zkgroup
+    │                   # anonymous credentials (Stage 4), Ed25519 signing for
+    │                   # federation (Stage 9). Pure logic — no I/O. Testable
+    │                   # without a database or network.
+    │
+    ├── store/          # SQLCipher-backed local database. Implements libsignal's
+    │                   # ProtocolStore trait. Schema covers sessions, prekeys,
+    │                   # message queue, group state, and CRDT operation logs.
+    │                   # Database key is a placeholder in Stage 1; wired to the
+    │                   # platform secure enclave in Stage 3.
+    │
+    ├── net/            # Async HTTP/WebSocket client. Knows how to talk to a
+    │                   # homeserver: account registration, prekey upload/fetch,
+    │                   # message send, WebSocket delivery loop, offline queue
+    │                   # drain on reconnect, Project deep link resolution.
+    │
+    ├── app-core/       # UniFFI boundary crate. Composes crypto + store + net
+    │                   # into the interface the mobile UI layers call. Contains
+    │                   # the .udl interface definitions; generated Swift and
+    │                   # Kotlin bindings live here. Nothing else crosses the
+    │                   # FFI boundary.
+    │
+    ├── server/         # The homeserver binary. Axum + Tokio, PostgreSQL via
+    │                   # sqlx. Grows across stages: account registration and
+    │                   # message relay (Stage 2), zkgroup credential issuance
+    │                   # (Stage 4), Project registration and scope enforcement
+    │                   # (Stage 6), WebRTC signaling (Stage 8), federation relay
+    │                   # via the federation crate (Stage 9).
+    │
+    ├── relay/          # The push relay binary. A standalone service with a
+    │                   # single responsibility: map pseudonyms to device tokens
+    │                   # and fire content-free wakeups via APNs and FCM. Minimal
+    │                   # dependencies; holds no message content.
+    │
+    ├── federation/     # Server-to-server protocol logic. HTTPS with Ed25519
+    │                   # request signing and verification, did:plc resolution,
+    │                   # cross-server message routing, selective federation
+    │                   # allowlist enforcement. Used as a library by server/.
+    │                   # Not a separate process.
+    │
+    ├── project-sdk/    # The Rust SDK for Project developers. Defines the API
+    │                   # contract: scope declarations, bot account primitives,
+    │                   # deep link registration, group access. First-party
+    │                   # Projects are built against this, so third-party
+    │                   # developers get the same interface.
+    │
+    └── test-utils/     # Shared test helpers. In-process homeserver harness,
+                        # testcontainers Postgres setup, simulated client
+                        # builders, fake prekey bundles and session fixtures.
+                        # Dev-dependency only — never compiled into any binary.
+```
+
+### `mobile/`
+
+The iOS and Android apps. Each is a native UI project (Xcode / Gradle) that imports `app-core` as a compiled artifact — an XCFramework on iOS, an AAR on Android. All cryptography, networking, and local storage logic lives in the Rust core; the mobile layers handle presentation only.
+
+### `projects/`
+
+First-party Projects, each in its own subdirectory with its own language and build system. Projects are applications built on top of the substrate — they interact with the homeserver through the Project API, not by linking against `core/`. The `sdk/` subdirectory contains HTTP client libraries (TypeScript, Python, and others as needed) for Projects that don't use Rust.
+
+Projects that happen to be written in Rust can depend directly on `core/crates/project-sdk/` as a Cargo path dependency, but this is not required.
+
+### `infra/`
+
+Docker images and Compose stacks for local development and CI, plus versioned PostgreSQL migrations managed by `sqlx migrate`. The homeserver binary expects migrations to have been applied; the migration files are the authoritative schema definition.
+
+### `docs/`
+
+Design documents, threat model, audit reports, and operational guides. The two documents currently at the repo root (`activism-network-design.md`, `technical-implementation.md`) will move here.
+
+---
+
 ## Core cryptographic stack
 
 ### libsignal
