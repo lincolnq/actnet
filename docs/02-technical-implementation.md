@@ -285,6 +285,118 @@ A few notes on what drives these numbers:
 
 ---
 
+## Multi-device
+
+A user may register multiple devices (phone, tablet, desktop). Each device has its own identity key pair, its own prekey bundles, and its own Double Ratchet sessions. When Alice sends a message to Bob, her device encrypts separately for each of Bob's registered devices — the server knows which devices belong to an account and fans out the ciphertext to each one. This is the same model Signal uses.
+
+Implications:
+
+- **Prekey bundles are per-device.** The server stores and serves bundles keyed by `(AccountId, DeviceId)`. When initiating a session, the sender fetches bundles for all of the recipient's devices and establishes a separate session with each one.
+- **Message fan-out is server-side.** The sender submits one encrypted payload per recipient device; the server queues each independently. This is acceptable because the server only sees ciphertext and recipient device identifiers — no plaintext, no aggregation across accounts.
+- **Device linking** uses a secure channel between the existing device and the new one (e.g., scanning a QR code containing a one-time secret). The new device generates its own keys, the existing device signs an attestation, and both are uploaded to the server. The existing device optionally transfers encrypted message history to the new device over a direct connection.
+- **Device revocation** removes the revoked device's prekey bundles from the server and notifies all active sessions that the device is no longer valid. Senders stop encrypting for it on the next message.
+
+Multi-device support ships in **Stage 3** alongside the mobile apps. The server schema in Stage 2 already models devices as a first-class concept (`device_id` on session tokens, prekey bundles stored per-device).
+
+---
+
+## Message content envelope
+
+The `EncryptedMessage.ciphertext` field wraps a structured plaintext envelope. The envelope is serialized with Protocol Buffers (the same wire format Signal uses) so that all clients and the eventual UniFFI boundary agree on encoding without ad-hoc parsing.
+
+```protobuf
+// proto/content.proto
+
+syntax = "proto3";
+package actnet;
+
+message ContentMessage {
+  oneof body {
+    TextMessage    text       = 1;
+    MediaMessage   media      = 2;
+    ReceiptMessage receipt    = 3;
+    TypingMessage  typing     = 4;
+    ExpiryUpdate   expiry     = 5;
+    // Future: reaction, reply, profile key update, group state change, etc.
+  }
+
+  uint64 timestamp_ms  = 15;  // sender's wall clock, unix millis
+  uint32 expiry_timer  = 16;  // seconds; 0 = use group/conversation default
+}
+
+message TextMessage {
+  string body = 1;
+}
+
+message MediaMessage {
+  string content_type = 1;  // MIME type
+  bytes  key          = 2;  // AES-256-GCM key for the attachment blob
+  bytes  digest       = 3;  // SHA-256 of the encrypted blob
+  string upload_url   = 4;  // URL where the encrypted blob was uploaded
+  uint64 size_bytes   = 5;  // plaintext size (for UI pre-allocation)
+  bytes  thumbnail    = 6;  // optional encrypted thumbnail, inline
+}
+
+message ReceiptMessage {
+  enum Type {
+    DELIVERY = 0;
+    READ     = 1;
+  }
+  Type             type       = 1;
+  repeated uint64  timestamps = 2;  // timestamps of the messages being receipted
+}
+
+message TypingMessage {
+  bool started = 1;
+}
+
+message ExpiryUpdate {
+  uint32 expiry_timer = 1;  // new timer in seconds
+}
+```
+
+The protobuf definition lives in a new `proto/` directory at the workspace root. The `types` crate generates Rust structs from it via `prost-build`; mobile layers use the same `.proto` files to generate Swift and Kotlin types. The envelope is defined in Stage 1 alongside the crypto core, even though most message types won't be fully exercised until later stages.
+
+---
+
+## Media and attachments
+
+Attachments follow Signal's proven encrypt-then-upload model:
+
+1. **Sender encrypts the file locally** with a random AES-256-GCM key.
+2. **Sender uploads the encrypted blob** to the homeserver's attachment endpoint (or an S3-compatible object store that the homeserver proxies). The server stores opaque ciphertext and returns a URL.
+3. **Sender includes the decryption key, digest, and URL in the message envelope** (the `MediaMessage` field above). This metadata is itself E2E encrypted as part of the normal message.
+4. **Recipient downloads the blob from the URL**, verifies the digest, and decrypts locally.
+
+The homeserver never sees plaintext file content. Attachment URLs are scoped to authenticated users (the server checks a session token before serving the blob), so the URLs are not publicly accessible.
+
+Storage strategy:
+
+- **Small deployments:** attachments are stored on the homeserver's local filesystem and served directly by the Axum server.
+- **Larger deployments:** the homeserver is configured with an S3-compatible endpoint (MinIO, Backblaze B2, AWS S3). The homeserver generates presigned upload/download URLs; clients transfer directly to/from object storage, keeping the homeserver out of the data path.
+
+Attachment expiry follows message expiry: when a message is deleted (by timer or manually), the server deletes the corresponding blob. A background garbage-collection task catches orphaned blobs.
+
+Media handling ships in **Stage 3** alongside the first mobile DM experience. The server attachment endpoint is added in Stage 2.
+
+---
+
+## Cross-server casual group encryption
+
+Action-bound groups use libsignal's zkgroup on a single server, but cross-server casual groups (Stage 9) have no single credential issuer. The encryption approach for these groups is **Sender Keys with fan-out**, the same scheme Signal uses for its non-anonymous group chats:
+
+1. Each group member generates a **Sender Key** — a symmetric ratcheting key — and distributes it to every other member via their existing pairwise Double Ratchet sessions.
+2. When sending a group message, the sender encrypts once with their Sender Key (which ratchets forward). All recipients who hold that Sender Key can decrypt.
+3. When a member is added, existing members send their current Sender Keys to the new member. When a member is removed, all remaining members rotate their Sender Keys and redistribute.
+
+This scheme is efficient (encrypt once, not once per recipient) and does not require a central server to manage group state. It is well-suited for the small (< 50 member), ad-hoc groups the design envisions.
+
+The tradeoff vs. MLS (RFC 9420): MLS provides stronger forward secrecy guarantees for large groups and more efficient member add/remove at scale, but it is significantly more complex to implement and its benefit is marginal for groups under 50 members. If real usage shows demand for larger cross-server groups, MLS can be adopted later without changing the substrate's external API — it would be a change inside the `crypto` crate's `groups` module.
+
+The `crypto` crate's `groups` module (currently stubbed for Stage 4 zkgroup) will grow a `sender_keys` sub-module in Stage 9. The interface is designed now so that `app-core` doesn't need to know which encryption scheme a group uses — it calls `groups::encrypt` / `groups::decrypt` and the module dispatches based on group type.
+
+---
+
 ## Open questions
 
 1. **Federation transport details.** HTTP/2 + request signing is the plan, but the exact signing scheme and key rotation story for server-to-server auth needs to be specced out before implementing federation.

@@ -281,6 +281,12 @@ pub struct QueuedMessage {
 
 **`Store` is a single struct, not split by concern.** You could imagine `SessionStore`, `AccountStore`, etc. as separate types. A single `Store` handle with distinct impl blocks is simpler and avoids duplicating the connection pool.
 
+**`Store` clones share a single connection, serialized by `tokio-rusqlite`.** libsignal's session functions require separate `&mut` references for different store sub-traits. We satisfy this by cloning the `Arc`-backed `Store` handle. This is safe because `tokio-rusqlite` serializes all operations through one blocking thread — there is never concurrent SQLite access. Do not replace the `Connection` with a connection pool without revisiting this invariant.
+
 **`crypto` functions take `&mut impl Store`, not `&mut dyn Store`.** Monomorphization rather than dynamic dispatch — no vtable overhead on the hot encrypt/decrypt path.
+
+**Multi-device: `app-core` encrypts per recipient device.** The session functions operate on a single `(AccountId, DeviceId)` pair. When sending a message, `app-core` is responsible for looking up all of the recipient's registered devices and calling `encrypt` once per device. The server fans out the resulting ciphertexts.
+
+**Message envelope is protobuf.** The plaintext inside `EncryptedMessage.ciphertext` is a serialized `ContentMessage` protobuf (defined in `proto/content.proto`). The `crypto` crate treats plaintext as opaque `&[u8]`; `app-core` handles serialization/deserialization of the envelope.
 
 **Group state is stubbed in Stage 1.** The `groups` module in `store` exists as an empty file. The schema will be designed alongside the zkgroup integration in Stage 4, but the module boundary is established early so Stage 4 doesn't require reorganizing the crate.

@@ -1,0 +1,11 @@
+[package]
+name    = "crypto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+types              = { workspace = true }
+libsignal-protocol = { workspace = true }
+rand               = { workspace = true }
+async-trait        = { workspace = true }
+thiserror          = { workspace = true }

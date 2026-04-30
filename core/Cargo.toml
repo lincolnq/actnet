@@ -1,0 +1,45 @@
+[workspace]
+members = [
+    "crates/types",
+    "crates/crypto",
+    "crates/store",
+    "crates/net",
+    "crates/app-core",
+    "crates/server",
+    "crates/relay",
+    "crates/federation",
+    "crates/project-sdk",
+    "crates/test-utils",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# Internal crates
+types          = { path = "crates/types" }
+crypto         = { path = "crates/crypto" }
+store          = { path = "crates/store" }
+
+# Cryptography
+# Pinned to a specific commit for reproducible builds. Update deliberately.
+libsignal-protocol = { git = "https://github.com/signalapp/libsignal", rev = "4c460615cdbe4ed53b23a5d1bf71493514bf2a80" }
+rand = "0.9"
+
+# Async
+tokio      = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Storage
+# rusqlite is listed explicitly to control the bundled-sqlcipher feature.
+# tokio-rusqlite wraps it with an async interface.
+rusqlite       = { version = "0.31", features = ["bundled-sqlcipher"] }
+tokio-rusqlite = "0.5"
+
+# Error handling
+thiserror = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+uuid  = { version = "1", features = ["v4", "serde"] }
+
+# Testing
+proptest = "1"

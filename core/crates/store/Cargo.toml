@@ -1,0 +1,19 @@
+[package]
+name    = "store"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[dependencies]
+types              = { workspace = true }
+crypto             = { workspace = true }
+libsignal-protocol = { workspace = true }
+rusqlite           = { workspace = true }
+tokio-rusqlite     = { workspace = true }
+tokio              = { workspace = true }
+async-trait        = { workspace = true }
+thiserror          = { workspace = true }
+serde              = { workspace = true }
+uuid               = { workspace = true }

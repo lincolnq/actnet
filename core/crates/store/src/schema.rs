@@ -1,0 +1,76 @@
+//! Database schema definition.
+//!
+//! The entire schema lives in a single SQL string ([`MIGRATIONS`]) applied as
+//! an idempotent batch using `CREATE TABLE IF NOT EXISTS`. This means the same
+//! string is safe to run on every database open — on a fresh database it
+//! creates all tables; on an existing one it is a no-op.
+//!
+//! When the schema needs to change, add new `ALTER TABLE` or `CREATE TABLE IF
+//! NOT EXISTS` statements to the end of [`MIGRATIONS`] rather than modifying
+//! existing statements. The goal is that the string remains idempotent and
+//! forward-only so no migration-version tracking is needed at this stage.
+
+/// All schema migrations applied as a single idempotent batch.
+/// Tables use `CREATE TABLE IF NOT EXISTS` so this is safe to run on every open.
+pub const MIGRATIONS: &str = "
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+
+-- Local identity key pair and libsignal registration ID.
+-- Constrained to one row.
+CREATE TABLE IF NOT EXISTS identity_keypair (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    keypair_bytes   BLOB    NOT NULL,
+    registration_id INTEGER NOT NULL
+);
+
+-- Trust store: known identity keys for remote addresses.
+-- Used by libsignal's IdentityKeyStore to detect key changes.
+CREATE TABLE IF NOT EXISTS known_identities (
+    address       TEXT NOT NULL PRIMARY KEY,   -- \"name.deviceId\"
+    identity_key  BLOB NOT NULL
+);
+
+-- Session records: one per remote (account, device) pair.
+CREATE TABLE IF NOT EXISTS sessions (
+    address TEXT NOT NULL PRIMARY KEY,         -- \"name.deviceId\"
+    record  BLOB NOT NULL
+);
+
+-- One-time prekey pool.
+CREATE TABLE IF NOT EXISTS prekeys (
+    id     INTEGER NOT NULL PRIMARY KEY,
+    record BLOB    NOT NULL
+);
+
+-- Signed prekeys (typically one active at a time).
+CREATE TABLE IF NOT EXISTS signed_prekeys (
+    id     INTEGER NOT NULL PRIMARY KEY,
+    record BLOB    NOT NULL
+);
+
+-- Local account state: DID and homeserver URL.
+-- Constrained to one row.
+CREATE TABLE IF NOT EXISTS account (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    account_id   TEXT    NOT NULL,
+    server_url   TEXT    NOT NULL,
+    registered_at INTEGER NOT NULL   -- unix millis
+);
+
+-- Kyber (post-quantum) prekey pool.
+CREATE TABLE IF NOT EXISTS kyber_prekeys (
+    id     INTEGER NOT NULL PRIMARY KEY,
+    record BLOB    NOT NULL
+);
+
+-- Outbound message queue: encrypted messages pending delivery.
+CREATE TABLE IF NOT EXISTS message_queue (
+    id                  TEXT    NOT NULL PRIMARY KEY,   -- UUID
+    recipient_name      TEXT    NOT NULL,
+    recipient_device_id INTEGER NOT NULL,
+    ciphertext          BLOB    NOT NULL,
+    message_kind        INTEGER NOT NULL,               -- 0 = PreKey, 1 = Whisper
+    enqueued_at         INTEGER NOT NULL                -- unix millis
+);
+";

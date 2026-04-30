@@ -1,0 +1,392 @@
+use crypto::{
+    prekeys::{
+        generate_kyber_prekey, generate_one_time_prekeys, generate_signed_prekey,
+        RecipientKeyBundle,
+    },
+    session::{decrypt, encrypt, initiate_session, DeviceAddress},
+    IdentityKeyPair,
+};
+use proptest::prelude::*;
+use store::{
+    account::RegistrationInfo,
+    Store,
+};
+use types::{AccountId, DeviceId, Timestamp};
+
+// ── Test helpers ──────────────────────────────────────────────────────────────
+
+/// A fully initialised local peer ready for use in tests.
+struct Peer {
+    store: Store,
+    identity: IdentityKeyPair,
+    address: DeviceAddress,
+    reg_id: u32,
+}
+
+impl Peer {
+    async fn new(name: &str) -> Self {
+        let store = Store::open_in_memory().await.expect("open in-memory store");
+        let identity = IdentityKeyPair::generate();
+        // libsignal registration IDs are arbitrary u32s assigned at account
+        // creation and included in prekey bundles so recipients can detect
+        // reregistration. Any non-zero value works for tests.
+        let reg_id = 1u32;
+        store
+            .save_identity(&identity, reg_id)
+            .await
+            .expect("save identity");
+        Peer {
+            store,
+            identity,
+            address: DeviceAddress::new(AccountId::new(name), DeviceId::new(1)),
+            reg_id,
+        }
+    }
+
+    /// Generate and store a fresh prekey bundle, returning the wire format
+    /// that would be published to the homeserver.
+    async fn publish_bundle(&self, signed_id: u32, kyber_id: u32) -> RecipientKeyBundle {
+        let signed = generate_signed_prekey(&self.identity, signed_id)
+            .expect("generate signed prekey");
+        self.store
+            .save_signed_prekey(signed_id, &signed.record)
+            .await
+            .expect("save signed prekey");
+
+        let one_time = generate_one_time_prekeys(1, 10).expect("generate one-time prekeys");
+        let records: Vec<(u32, Vec<u8>)> = one_time
+            .iter()
+            .map(|pk| (pk.wire.id, pk.record.clone()))
+            .collect();
+        self.store
+            .save_one_time_prekeys(&records)
+            .await
+            .expect("save one-time prekeys");
+
+        let kyber = generate_kyber_prekey(&self.identity, kyber_id)
+            .expect("generate kyber prekey");
+        self.store
+            .save_kyber_prekeys(&[(kyber_id, kyber.record.clone())])
+            .await
+            .expect("save kyber prekeys");
+
+        RecipientKeyBundle {
+            identity_key: self.identity.public_key().serialize(),
+            registration_id: self.reg_id,
+            device_id: 1,
+            signed_prekey: signed.wire,
+            one_time_prekey: Some(one_time[0].wire.clone()),
+            kyber_prekey: kyber.wire,
+        }
+    }
+}
+
+/// Set up a session: Alice fetches Bob's bundle and initiates.
+/// Returns (alice, bob) ready for message exchange.
+async fn established_session() -> (Peer, Peer) {
+    let mut alice = Peer::new("alice").await;
+    let bob = Peer::new("bob").await;
+    let bob_bundle = bob.publish_bundle(1, 1).await;
+    initiate_session(&mut alice.store, &alice.address, &bob.address, &bob_bundle)
+        .await
+        .expect("initiate session");
+    (alice, bob)
+}
+
+fn run<F: std::future::Future<Output = T>, T>(f: F) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(f)
+}
+
+// ── Store unit tests ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn store_opens_and_migrates() {
+    Store::open_in_memory().await.expect("store should open cleanly");
+}
+
+#[tokio::test]
+async fn identity_round_trip() {
+    let store = Store::open_in_memory().await.unwrap();
+    let keypair = IdentityKeyPair::generate();
+    let reg_id = 42u32;
+
+    store.save_identity(&keypair, reg_id).await.unwrap();
+
+    let loaded = store.load_identity().await.unwrap().expect("identity should be present");
+    assert_eq!(keypair.serialize(), loaded.serialize());
+    assert_eq!(keypair.public_key().serialize(), loaded.public_key().serialize());
+}
+
+#[tokio::test]
+async fn registration_round_trip() {
+    let store = Store::open_in_memory().await.unwrap();
+
+    assert!(store.load_registration().await.unwrap().is_none());
+
+    let info = RegistrationInfo {
+        account_id: "did:plc:abc123".to_string(),
+        server_url: "https://home.example.com".to_string(),
+        registered_at: Timestamp::now(),
+    };
+    store.save_registration(&info).await.unwrap();
+
+    let loaded = store.load_registration().await.unwrap().expect("registration should be present");
+    assert_eq!(loaded.account_id, info.account_id);
+    assert_eq!(loaded.server_url, info.server_url);
+}
+
+#[tokio::test]
+async fn prekey_pool_count() {
+    let peer = Peer::new("alice").await;
+    assert_eq!(peer.store.remaining_one_time_prekey_count().await.unwrap(), 0);
+    assert_eq!(peer.store.remaining_kyber_prekey_count().await.unwrap(), 0);
+
+    peer.publish_bundle(1, 1).await;
+
+    assert_eq!(peer.store.remaining_one_time_prekey_count().await.unwrap(), 10);
+    assert_eq!(peer.store.remaining_kyber_prekey_count().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn message_queue_enqueue_drain_deliver() {
+    use store::messages::QueuedMessage;
+    use types::MessageId;
+
+    let store = Store::open_in_memory().await.unwrap();
+
+    let msg = QueuedMessage {
+        id: MessageId::new(),
+        recipient_name: "bob".to_string(),
+        recipient_device_id: 1,
+        ciphertext: vec![1, 2, 3],
+        message_kind: 1,
+        enqueued_at: Timestamp::now(),
+    };
+
+    assert!(store.drain().await.unwrap().is_empty());
+
+    store.enqueue(&msg).await.unwrap();
+    let queued = store.drain().await.unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].ciphertext, msg.ciphertext);
+
+    store.mark_delivered(msg.id).await.unwrap();
+    assert!(store.drain().await.unwrap().is_empty());
+}
+
+// ── Session round-trip tests ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn session_alice_to_bob_round_trip() {
+    let (mut alice, mut bob) = established_session().await;
+    let plaintext = b"hello, Bob!";
+
+    let encrypted = encrypt(&mut alice.store, &alice.address, &bob.address, plaintext)
+        .await
+        .expect("encrypt");
+    let decrypted = decrypt(&mut bob.store, &bob.address, &alice.address, &encrypted)
+        .await
+        .expect("decrypt");
+
+    assert_eq!(decrypted, plaintext);
+}
+
+#[tokio::test]
+async fn first_message_is_prekey_type() {
+    use crypto::session::MessageKind;
+    let (mut alice, _bob) = established_session().await;
+
+    let encrypted = encrypt(&mut alice.store, &alice.address, &bob_addr(), b"hi")
+        .await
+        .expect("encrypt");
+
+    assert_eq!(
+        encrypted.kind,
+        MessageKind::PreKey,
+        "first message to a new session should be a PreKey message"
+    );
+}
+
+fn bob_addr() -> DeviceAddress {
+    DeviceAddress::new(AccountId::new("bob"), DeviceId::new(1))
+}
+
+#[tokio::test]
+async fn ratchet_advances_across_multiple_messages() {
+    let (mut alice, mut bob) = established_session().await;
+
+    for i in 0u8..10 {
+        let plaintext = format!("message {i}").into_bytes();
+        let enc = encrypt(&mut alice.store, &alice.address, &bob.address, &plaintext)
+            .await
+            .expect("encrypt");
+        let dec = decrypt(&mut bob.store, &bob.address, &alice.address, &enc)
+            .await
+            .expect("decrypt");
+        assert_eq!(dec, plaintext, "message {i} should round-trip correctly");
+    }
+}
+
+#[tokio::test]
+async fn bidirectional_messages() {
+    let (mut alice, mut bob) = established_session().await;
+
+    // Alice sends first (establishes Bob's inbound session)
+    let enc = encrypt(&mut alice.store, &alice.address, &bob.address, b"hello Bob")
+        .await
+        .unwrap();
+    decrypt(&mut bob.store, &bob.address, &alice.address, &enc)
+        .await
+        .unwrap();
+
+    // Now alternate directions
+    for i in 0u8..5 {
+        let msg = format!("alice→bob {i}").into_bytes();
+        let enc = encrypt(&mut alice.store, &alice.address, &bob.address, &msg)
+            .await
+            .unwrap();
+        let dec = decrypt(&mut bob.store, &bob.address, &alice.address, &enc)
+            .await
+            .unwrap();
+        assert_eq!(dec, msg);
+
+        let msg = format!("bob→alice {i}").into_bytes();
+        let enc = encrypt(&mut bob.store, &bob.address, &alice.address, &msg)
+            .await
+            .unwrap();
+        let dec = decrypt(&mut alice.store, &alice.address, &bob.address, &enc)
+            .await
+            .unwrap();
+        assert_eq!(dec, msg);
+    }
+}
+
+#[tokio::test]
+async fn messages_become_whisper_after_bob_replies() {
+    use crypto::session::MessageKind;
+
+    let (mut alice, mut bob) = established_session().await;
+
+    // Alice's messages remain PreKey until Bob replies — the session is
+    // "unacknowledged" until Alice receives a message from Bob.
+    let enc1 = encrypt(&mut alice.store, &alice.address, &bob.address, b"first")
+        .await
+        .unwrap();
+    assert_eq!(enc1.kind, MessageKind::PreKey);
+
+    let enc2 = encrypt(&mut alice.store, &alice.address, &bob.address, b"second")
+        .await
+        .unwrap();
+    assert_eq!(enc2.kind, MessageKind::PreKey, "still PreKey — no reply from Bob yet");
+
+    // Bob decrypts both
+    decrypt(&mut bob.store, &bob.address, &alice.address, &enc1).await.unwrap();
+    decrypt(&mut bob.store, &bob.address, &alice.address, &enc2).await.unwrap();
+
+    // Bob replies — this acknowledges the session on Alice's side
+    let reply = encrypt(&mut bob.store, &bob.address, &alice.address, b"hey Alice")
+        .await
+        .unwrap();
+    decrypt(&mut alice.store, &alice.address, &bob.address, &reply).await.unwrap();
+
+    // Now Alice's messages are Whisper
+    let enc3 = encrypt(&mut alice.store, &alice.address, &bob.address, b"third")
+        .await
+        .unwrap();
+    assert_eq!(enc3.kind, MessageKind::Whisper, "PreKey→Whisper after Bob's reply");
+}
+
+#[tokio::test]
+async fn prekey_consumed_after_session_init() {
+    let (mut alice, mut bob) = established_session().await;
+    assert_eq!(bob.store.remaining_one_time_prekey_count().await.unwrap(), 10);
+
+    // Alice sends first message; Bob decrypts, consuming the one-time prekey
+    let enc = encrypt(&mut alice.store, &alice.address, &bob.address, b"hi")
+        .await
+        .unwrap();
+    decrypt(&mut bob.store, &bob.address, &alice.address, &enc)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        bob.store.remaining_one_time_prekey_count().await.unwrap(),
+        9,
+        "one-time prekey should be consumed after session initiation"
+    );
+}
+
+// ── Property-based tests ──────────────────────────────────────────────────────
+
+/// A message in the generated sequence: direction (true = Alice→Bob) and payload.
+#[derive(Debug, Clone)]
+struct TestMessage {
+    alice_to_bob: bool,
+    payload: Vec<u8>,
+}
+
+fn arb_message() -> impl Strategy<Value = TestMessage> {
+    (any::<bool>(), prop::collection::vec(any::<u8>(), 1..64)).prop_map(
+        |(alice_to_bob, payload)| TestMessage { alice_to_bob, payload },
+    )
+}
+
+proptest! {
+    /// Any sequence of sends and receives should leave both sessions in a
+    /// consistent state: every message decrypts to its original plaintext.
+    #[test]
+    fn any_message_sequence_round_trips(
+        messages in prop::collection::vec(arb_message(), 1..20)
+    ) {
+        let result: Result<(), String> = run(async move {
+            let (mut alice, mut bob) = established_session().await;
+
+            // Bootstrap: Alice→Bob first to give Bob an inbound session.
+            let enc = encrypt(&mut alice.store, &alice.address, &bob.address, b"bootstrap")
+                .await
+                .map_err(|e| e.to_string())?;
+            decrypt(&mut bob.store, &bob.address, &alice.address, &enc)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            for msg in &messages {
+                if msg.alice_to_bob {
+                    let enc =
+                        encrypt(&mut alice.store, &alice.address, &bob.address, &msg.payload)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    let dec = decrypt(&mut bob.store, &bob.address, &alice.address, &enc)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if dec != msg.payload {
+                        return Err(format!(
+                            "Alice→Bob: decrypted {:?} != original {:?}",
+                            dec, msg.payload
+                        ));
+                    }
+                } else {
+                    let enc =
+                        encrypt(&mut bob.store, &bob.address, &alice.address, &msg.payload)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                    let dec = decrypt(&mut alice.store, &alice.address, &bob.address, &enc)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if dec != msg.payload {
+                        return Err(format!(
+                            "Bob→Alice: decrypted {:?} != original {:?}",
+                            dec, msg.payload
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        });
+
+        prop_assert!(result.is_ok(), "{}", result.unwrap_err());
+    }
+}
