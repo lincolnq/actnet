@@ -80,7 +80,7 @@ The homeserver deletes its own copies on the same schedule. Clients delete on ti
 
 ### Projects
 
-A Project is an application that runs on a homeserver and uses the network's primitives — identity, encrypted channels, presence, the user's connections graph — under scoped, user-granted permissions.
+A Project is an application that runs on a homeserver and uses the network's primitives — identity, encrypted channels, the user's connections graph — under scoped, user-granted permissions.
 
 - A Project owns one or more action-bound groups on its homeserver.
 - A Project can request scoped capabilities ("read availability for users in this turf team," "send mobilization pushes to RSVP'd attendees").
@@ -111,7 +111,7 @@ Deferred: shared-log / CRDT primitives for collaboratively edited cross-instance
 
 Federation is opt-in per-homeserver and per-Project. Some Projects will federate broadly (a public microblog); some narrowly (a vouching/credentialing system that only federates among trusted movement orgs); some not at all.
 
-A consequence worth noting: **the network has two federation surfaces.** The substrate federates (identity, DMs, casual groups, push, presence). Projects can opt into their own federation on top. They share transport and identity primitives but are otherwise distinct. A Project can choose to be server-local, federated with an allowlist, or broadly federated — and substrate-level federation policy (which homeservers does this homeserver talk to at all) is enforced underneath.
+A consequence worth noting: **the network has two federation surfaces.** The substrate federates (identity, DMs, casual groups, push). Projects can opt into their own federation on top. They share transport and identity primitives but are otherwise distinct. A Project can choose to be server-local, federated with an allowlist, or broadly federated — and substrate-level federation policy (which homeservers does this homeserver talk to at all) is enforced underneath.
 
 ### Stance on ATProto
 
@@ -142,7 +142,6 @@ One important distinction: the substrate's **private connections graph** (people
 | Persistent shared state (turf lists, call queues, RSVP lists, polls, docs) | No — Project-local |
 | Bots and agents | No — live in the Project's trust domain |
 | Push notifications | Yes — via the relay (below) |
-| Presence | Server-local; not federated |
 | Identity (DID) | Yes — portable across homeservers |
 | Public profile (minimal) | Yes — substrate-level |
 | Project-to-Project federation (pub/sub, RPC) | Yes, when the Project opts in |
@@ -197,6 +196,10 @@ A sign-up and team-formation Project for actions where participants are divided 
 ### Project: Action Day
 
 A situational-awareness feature for participants during an active action, centered on a map and an announcements feed rather than chat. The map shows admin-set destination markers (staging area, route, dispersal point), pushed to all participants via high-priority push and cached for offline use; participant location is uploaded to the homeserver and shown to other participants in real time, but is ephemeral — the homeserver discards location records on a short rolling window (e.g., a few minutes) and purges all location data when the action ends. Announcements are delivered through a dedicated action-bound encrypted group where members have receive-only access enforced at the protocol level — they cannot see the participant list or reply. Sender authenticity is verified by checking the sender's key against the group's admin keyset. Action Day can run standalone or be layered on top of Team Assignment, with participants enrolled in the announcement group as part of the Team Assignment sign-up flow.
+
+### Project: Collaborative Documents
+
+A wiki and document editing Project where content is visible only to group members. Documents live inside a long-lived action-bound group — either a dedicated server-wide group or an existing team group — so the group's existing key management handles membership and encryption. Edits are CRDT operations encrypted and broadcast via the group channel; clients apply them locally to reconstruct the document. The server stores an append-only log of encrypted operation blobs it cannot read. Periodic snapshots of the full document state (re-encrypted with the current group key) mean new members sync from the latest snapshot rather than replaying the entire history.
 
 ### Project: Engagement Tracking
 
