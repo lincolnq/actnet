@@ -2,3 +2,11 @@
 name    = "test-utils"
 version = "0.1.0"
 edition = "2021"
+
+[dependencies]
+types              = { workspace = true }
+crypto             = { workspace = true }
+store              = { workspace = true }
+libsignal-protocol = { workspace = true }
+rand               = { workspace = true }
+tokio              = { workspace = true }

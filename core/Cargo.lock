@@ -247,7 +247,9 @@ dependencies = [
  "async-trait",
  "libsignal-protocol",
  "rand",
+ "test-utils",
  "thiserror 1.0.69",
+ "tokio",
  "types",
 ]
 
@@ -1598,6 +1600,7 @@ dependencies = [
  "proptest",
  "rusqlite",
  "serde",
+ "test-utils",
  "thiserror 1.0.69",
  "tokio",
  "tokio-rusqlite",
@@ -1638,6 +1641,14 @@ dependencies = [
 [[package]]
 name = "test-utils"
 version = "0.1.0"
+dependencies = [
+ "crypto",
+ "libsignal-protocol",
+ "rand",
+ "store",
+ "tokio",
+ "types",
+]
 
 [[package]]
 name = "thiserror"

@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dev-dependencies]
-proptest = { workspace = true }
+proptest   = { workspace = true }
+test-utils = { path = "../test-utils" }
+tokio      = { workspace = true }
 
 [dependencies]
 types              = { workspace = true }
