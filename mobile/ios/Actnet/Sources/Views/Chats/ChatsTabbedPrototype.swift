@@ -74,23 +74,16 @@ struct ChatsTabbedPrototype: View {
         NavigationStack {
             VStack(spacing: 0) {
                 tabStrip
-                    .background(Color.avPaper)
+                    // Shelf sits at the very top now that the nav bar is gone;
+                    // its avPaper fills up behind the status bar.
+                    .background(Color.avPaper.ignoresSafeArea(edges: .top))
                     .overlay(alignment: .bottom) {
                         Rectangle().fill(Color.avMuted.opacity(0.18)).frame(height: 0.5)
                     }
                 list
             }
             .background(Color.avCard)
-            .navigationTitle("Chats")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Image(systemName: "gearshape").font(.subheadline).foregroundStyle(Color.avBrand)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Image(systemName: "square.and.pencil").foregroundStyle(Color.avBrand)
-                }
-            }
+            .toolbar(.hidden, for: .navigationBar)
         }
         .tint(Color.avBrand)
     }
@@ -213,7 +206,7 @@ private struct ProtoRow: View {
 // the bar by hand (rather than the system TabView) so the tab capsule and the
 // search circle are true siblings — same fill, same height, same float — like
 // Slack's bar + detached search button.
-private enum ProtoBottomTab { case chats, network }
+private enum ProtoBottomTab { case chats, network, settings }
 
 private struct ProtoTabHost: View {
     @State private var tab: ProtoBottomTab = .chats
@@ -232,34 +225,45 @@ private struct ProtoTabHost: View {
                         )
                         .navigationTitle("Network")
                     }
+                case .settings:
+                    NavigationStack {
+                        ContentUnavailableView(
+                            "Settings",
+                            systemImage: "gearshape",
+                            description: Text("Accounts, notifications, appearance.")
+                        )
+                        .navigationTitle("Settings")
+                    }
                 }
             }
             bottomBar
         }
     }
 
-    // A floating capsule of tab items + a detached, matching search circle.
+    // Left: a floating capsule of tab items (Chats / Network / Settings).
+    // Right: a separate action bubble holding search + compose together.
     private var bottomBar: some View {
         HStack(spacing: 10) {
-            HStack(spacing: 4) {
+            HStack(spacing: 2) {
                 tabItem(.chats, "message", "Chats")
                 tabItem(.network, "server.rack", "Network")
+                tabItem(.settings, "gearshape", "Settings")
             }
             .padding(6)
             .background(Color.avPaper, in: Capsule())
             .overlay(Capsule().stroke(Color.avMuted.opacity(0.18), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 2)
 
-            Button {} label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(Color.avBrand)
-                    .frame(width: 60, height: 60)
-                    .background(Color.avPaper, in: Circle())
-                    .overlay(Circle().stroke(Color.avMuted.opacity(0.18), lineWidth: 0.5))
-                    .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 2)
+            Spacer(minLength: 0)
+
+            HStack(spacing: 2) {
+                actionButton("magnifyingglass")
+                actionButton("square.and.pencil")
             }
-            .buttonStyle(.plain)
+            .padding(6)
+            .background(Color.avPaper, in: Capsule())
+            .overlay(Capsule().stroke(Color.avMuted.opacity(0.18), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 2)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 4)
@@ -273,9 +277,20 @@ private struct ProtoTabHost: View {
                 Text(label).font(.caption2.weight(.medium))
             }
             .foregroundStyle(isSel ? Color.avBrand : Color.avMuted)
-            .frame(width: 78, height: 48)
+            .frame(width: 66, height: 48)
             .background(isSel ? Color.avBrand.opacity(0.14) : .clear, in: Capsule())
             .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func actionButton(_ icon: String) -> some View {
+        Button {} label: {
+            Image(systemName: icon)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.avBrand)
+                .frame(width: 48, height: 48)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
     }
