@@ -54,7 +54,7 @@ struct ChatsTabbedPrototype: View {
             ProtoConv(title: "Mom", preview: "You: landed safe", time: "3h", icon: "person"),
             ProtoConv(title: "Book Club", preview: "Jo: chapter 4 tonight", time: "Mon", icon: "person.3"),
         ])
-        let updates = ProtoTab(name: "Updates", systemImage: "bell.badge", unread: 0, convs: [
+        let updates = ProtoTab(name: "Updates", systemImage: "bell", unread: 0, convs: [
             ProtoConv(title: "adminbot · safe-haven", preview: "Server updated to 0.4.1", time: "6h", icon: "gearshape.2", isBot: true, accountTint: .plum400),
             ProtoConv(title: "adminbot · pseudo.example", preview: "Welcome to Pseudo.", time: "2d", icon: "gearshape.2", isBot: true, accountTint: .moss),
             ProtoConv(title: "Announcements", preview: "Rally location confirmed", time: "2d", icon: "megaphone"),
@@ -74,10 +74,13 @@ struct ChatsTabbedPrototype: View {
         NavigationStack {
             VStack(spacing: 0) {
                 tabStrip
-                Divider().overlay(Color.avMuted.opacity(0.25))
+                    .background(Color.avPaper)
+                    .overlay(alignment: .bottom) {
+                        Rectangle().fill(Color.avMuted.opacity(0.18)).frame(height: 0.5)
+                    }
                 list
             }
-            .background(Color.avPaper)
+            .background(Color.avCard)
             .navigationTitle("Chats")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -96,41 +99,37 @@ struct ChatsTabbedPrototype: View {
     // Trailing "+" signals the set is user-configurable. No "All" tab — the
     // partition is exhaustive by construction.
     private var tabStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                ForEach(tabs) { tab in
-                    tabButton(tab)
-                }
-                Button {} label: {
-                    Image(systemName: "plus")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Color.avMuted)
-                        .frame(width: 34, height: 34)
-                }
+        HStack(spacing: 4) {
+            ForEach(tabs) { tab in
+                tabButton(tab)
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 4)
         }
-        .background(Color.avPaper)
+        .frame(maxWidth: .infinity)   // center the tab group
+        .padding(.top, 4)
     }
 
     private func tabButton(_ tab: ProtoTab) -> some View {
         let isSel = tab.id == selected
         return Button { selected = tab.id } label: {
-            VStack(spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: tab.systemImage).font(.footnote)
-                    Text(tab.name).font(.subheadline.weight(isSel ? .semibold : .regular))
-                    if tab.unread > 0 {
-                        Text("\(tab.unread)")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Color.avNotification, in: Capsule())
-                    }
+            VStack(spacing: 7) {
+                VStack(spacing: 4) {
+                    Image(systemName: tab.systemImage)
+                        .font(.body)
+                        .overlay(alignment: .topTrailing) {
+                            if tab.unread > 0 {
+                                Text("\(tab.unread)")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 4).padding(.vertical, 1)
+                                    .background(Color.avNotification, in: Capsule())
+                                    .offset(x: 12, y: -7)
+                            }
+                        }
+                    Text(tab.name).font(.caption2.weight(isSel ? .semibold : .medium))
                 }
-                .foregroundStyle(isSel ? Color.avInk : Color.avMuted)
-                .padding(.horizontal, 12).padding(.vertical, 8)
+                .foregroundStyle(isSel ? Color.avBrand : Color.avMuted)
+                .frame(width: 62)
+                .padding(.top, 8).padding(.bottom, 2)
 
                 Rectangle()
                     .fill(isSel ? Color.avBrand : .clear)
@@ -143,12 +142,12 @@ struct ChatsTabbedPrototype: View {
     private var list: some View {
         List(current.convs) { c in
             ProtoRow(conv: c)
-                .listRowBackground(Color.avPaper)
+                .listRowBackground(Color.avCard)
                 .listRowSeparatorTint(Color.avMuted.opacity(0.2))
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(Color.avPaper)
+        .background(Color.avCard)
         // Leave room so the last row scrolls clear of the floating bottom bar.
         .contentMargins(.bottom, 88, for: .scrollContent)
     }
@@ -196,7 +195,7 @@ private struct ProtoRow: View {
             ? AnyShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             : AnyShape(Circle())
         return shape
-            .fill(Color.avCard)
+            .fill(Color.avPaper)
             .frame(width: 46, height: 46)
             .overlay { Image(systemName: conv.icon).foregroundStyle(Color.avMuted) }
             .overlay(alignment: .bottomTrailing) {
@@ -247,7 +246,7 @@ private struct ProtoTabHost: View {
                 tabItem(.network, "server.rack", "Network")
             }
             .padding(6)
-            .background(Color.avCard, in: Capsule())
+            .background(Color.avPaper, in: Capsule())
             .overlay(Capsule().stroke(Color.avMuted.opacity(0.18), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 2)
 
@@ -256,7 +255,7 @@ private struct ProtoTabHost: View {
                     .font(.body.weight(.semibold))
                     .foregroundStyle(Color.avBrand)
                     .frame(width: 60, height: 60)
-                    .background(Color.avCard, in: Circle())
+                    .background(Color.avPaper, in: Circle())
                     .overlay(Circle().stroke(Color.avMuted.opacity(0.18), lineWidth: 0.5))
                     .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 2)
             }
