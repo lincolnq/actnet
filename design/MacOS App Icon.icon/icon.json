@@ -1,6 +1,6 @@
 {
   "fill" : {
-    "solid" : "display-p3:0.41957,0.24318,0.31383,1.00000"
+    "solid" : "display-p3:0.99023,0.94727,0.91797,1.00000"
   },
   "groups" : [
     {
@@ -12,20 +12,12 @@
             {
               "appearance" : "dark",
               "value" : {
-                "solid" : "display-p3:0.99023,0.94727,0.91797,0.50842"
+                "solid" : "display-p3:0.99512,0.97363,0.95850,1.00000"
               }
             }
           ],
-          "glass" : true,
-          "image-name" : "MacOS App Icon a.svg",
-          "name" : "MacOS App Icon a",
-          "position" : {
-            "scale" : 1.16,
-            "translation-in-points" : [
-              -3.859375,
-              -3.480000000000018
-            ]
-          }
+          "image-name" : "MacOS App Icon 'a'.svg",
+          "name" : "MacOS App Icon 'a'"
         }
       ],
       "lighting" : "individual",
@@ -50,32 +42,25 @@
       "hidden" : false,
       "layers" : [
         {
-          "fill-specializations" : [
-            {
-              "appearance" : "dark",
-              "value" : "automatic"
-            }
-          ],
-          "glass" : true,
-          "image-name" : "MacOS App Icon b.svg",
-          "name" : "MacOS App Icon b",
+          "image-name" : "MacOS App Icon Border 2.svg",
+          "name" : "MacOS App Icon Border 2",
           "position" : {
-            "scale" : 1.22,
+            "scale" : 1.2,
             "translation-in-points" : [
-              1.931874999999991,
-              10.598124999999982
+              0,
+              0
             ]
           }
         }
       ],
       "lighting" : "individual",
       "shadow" : {
-        "kind" : "neutral",
+        "kind" : "layer-color",
         "opacity" : 0.5
       },
       "specular" : true,
       "translucency" : {
-        "enabled" : true,
+        "enabled" : false,
         "value" : 0.67
       }
     }
