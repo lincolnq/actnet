@@ -41,6 +41,7 @@ struct ChatsTabbedPrototype: View {
     @State private var selected: UUID
 
     private let tabs: [ProtoTab]
+    private let threads: [ProtoConv]
 
     init() {
         let action = ProtoTab(name: "Action", systemImage: "megaphone", unread: 6, convs: [
@@ -59,16 +60,22 @@ struct ChatsTabbedPrototype: View {
             ProtoConv(title: "adminbot · pseudo.example", preview: "Welcome to Pseudo.", time: "2d", icon: "gearshape.2", isBot: true, accountTint: .moss),
             ProtoConv(title: "Announcements", preview: "Rally location confirmed", time: "2d", icon: "megaphone"),
         ])
-        let threads = ProtoTab(name: "Threads", systemImage: "text.bubble", unread: 3, convs: [
-            ProtoConv(title: "route logistics", preview: "Maria: I can drive the van", time: "12m", unread: 3, icon: "arrow.turn.down.right", isThreadRow: true, threadParent: "Canvass NW"),
+        self.tabs = [action, personal, updates]
+        // Threads are no longer a tab — they surface as a single catch-up entry
+        // pinned to the top of the list (see threadsEntry).
+        self.threads = [
+            ProtoConv(title: "", preview: "", time: "12m", unread: 3, icon: "arrow.turn.down.right", isThreadRow: true, threadParent: "Canvass NW"),
             ProtoConv(title: "sign-up sheet", preview: "You: added 3 slots", time: "1h", icon: "arrow.turn.down.right", isThreadRow: true, threadParent: "Phone Bank"),
-            ProtoConv(title: "venue A vs B", preview: "Sam: B has parking", time: "Yst", icon: "arrow.turn.down.right", isThreadRow: true, threadParent: "Action Day Leads"),
-        ])
-        self.tabs = [action, personal, updates, threads]
+            ProtoConv(title: "venue A vs B", preview: "Sam: B has parking", time: "Yst", unread: 2, icon: "arrow.turn.down.right", isThreadRow: true, threadParent: "Action Day Leads"),
+        ]
         _selected = State(initialValue: action.id)
     }
 
     private var current: ProtoTab { tabs.first { $0.id == selected } ?? tabs[0] }
+    private var firstUnreadThread: ProtoConv? { threads.first { $0.unread > 0 } }
+    private var unreadThreadCount: Int { threads.filter { $0.unread > 0 }.count }
+    private var threadsUnreadTotal: Int { threads.reduce(0) { $0 + $1.unread } }
+    private var unreadThreadGroups: [String] { threads.filter { $0.unread > 0 }.compactMap { $0.threadParent } }
 
     var body: some View {
         NavigationStack {
@@ -133,16 +140,64 @@ struct ChatsTabbedPrototype: View {
     }
 
     private var list: some View {
-        List(current.convs) { c in
-            ProtoRow(conv: c)
-                .listRowBackground(Color.avCard)
-                .listRowSeparatorTint(Color.avMuted.opacity(0.2))
+        List {
+            // Threads only surface on the first (Action) tab, not Personal/Updates.
+            if unreadThreadCount > 0 && selected == tabs.first?.id {
+                threadsEntry()
+                    .listRowBackground(Color.avCard)
+                    .listRowSeparatorTint(Color.avMuted.opacity(0.2))
+            }
+            ForEach(current.convs) { c in
+                ProtoRow(conv: c)
+                    .listRowBackground(Color.avCard)
+                    .listRowSeparatorTint(Color.avMuted.opacity(0.2))
+            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Color.avCard)
         // Leave room so the last row scrolls clear of the floating bottom bar.
         .contentMargins(.bottom, 88, for: .scrollContent)
+    }
+
+    // A single, deliberately compact catch-up entry pinned atop the list — the
+    // threads "home" without a tab. Shorter than a conversation row and with a
+    // smaller-than-avatar glyph so it reads as distinct chrome, not a chat.
+    private func threadsEntry() -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.avBrand)
+                .frame(width: 30, height: 30)
+                .background(Color.avBrand.opacity(0.12), in: Circle())
+                // Reserve the avatar's footprint (46) so the text lines up with
+                // the conversation rows below.
+                .frame(width: 46)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Text("Threads").font(.subheadline.weight(.semibold)).foregroundStyle(Color.avInk)
+                    Text("(\(unreadThreadCount) new)")
+                        .font(.caption).foregroundStyle(Color.avBrand)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(Color.avMuted)
+                }
+                // Preview lists the groups the unread threads live in ("in Canvass
+                // NW, Action Day Leads"), with the unread badge trailing — same
+                // slot as the conversation rows below.
+                HStack {
+                    (Text("").foregroundStyle(Color.avMuted.opacity(0.8))
+                     + Text(unreadThreadGroups.joined(separator: " • ")).foregroundStyle(Color.avMuted.opacity(0.7)))
+                        .font(.caption).lineLimit(1)
+                    Spacer()
+                    Text("\(threadsUnreadTotal)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.avNotification, in: Capsule())
+                }
+            }
+        }
+        .padding(.vertical, -2)
     }
 }
 
@@ -191,14 +246,6 @@ private struct ProtoRow: View {
             .fill(Color.avPaper)
             .frame(width: 46, height: 46)
             .overlay { Image(systemName: conv.icon).foregroundStyle(Color.avMuted) }
-            .overlay(alignment: .bottomTrailing) {
-                // Subtle multi-account hint — the unsettled axis. A small tinted
-                // ring instead of a per-row initials badge.
-                if let tint = conv.accountTint {
-                    Circle().fill(tint).frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(Color.avPaper, lineWidth: 2))
-                }
-            }
     }
 }
 
