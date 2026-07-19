@@ -493,7 +493,10 @@ E2E); push real interactivity into an explicit full-screen webview.
 - **Testbot** (✅, `21`) — `node/packages/testbot/` TS bot on `@theavalanche/app-core`: web "Text Me" button →
   ephemeral bot DMs you, relays to Claude Haiku. Proof-of-concept for the Project model.
 - **Adminbot** (✅ minimal, `22`) — server admin via chat. Two foundations: (1) **one superuser DID**
-  (`did:local:adminbot`) pinned in server config; all `/v1/admin/*` check `caller==ADMINBOT_DID`. (2) An
+  pinned in server config as `ADMINBOT_DID`; all `/v1/admin/*` check `caller==ADMINBOT_DID`. DECIDED to
+  drop the old fixed `did:local:adminbot` literal for a random per-server `did:local:` DID, so multi-homed
+  clients don't merge different servers' adminbots in the per-identity store (`22`,`37`; role discovery
+  deferred). (2) An
   **`#admins` group** (regular E2E group) whose encrypted membership *is* the admin set — **the server DB
   doesn't reveal who has admin authority**. Adminbot is the bridge: it can read `#admins` (it's a member)
   AND is trusted by the server (the pin). **Two authorities:** operator authority (install Projects, grant
