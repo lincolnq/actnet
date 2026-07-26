@@ -65,7 +65,7 @@ final class AppState: ObservableObject {
     @Published var connectionStates: [String: ConnectionState] = [:]
 
     enum Tab {
-        case chats, network
+        case chats, network, settings, search
     }
 
     /// Active AppCore instances, keyed by DID.

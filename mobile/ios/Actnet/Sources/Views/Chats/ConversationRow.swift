@@ -3,6 +3,10 @@ import SwiftUI
 struct ConversationRow: View {
     let conversation: Conversation
     let account: Account?
+    /// Whether to show the per-row account initial badge. Off by default:
+    /// organization (per-account tabs) now disambiguates which identity a
+    /// conversation belongs to, replacing per-row marking (`docs/37`).
+    var showsAccountBadge: Bool = false
 
     @EnvironmentObject private var appState: AppState
 
@@ -90,12 +94,14 @@ struct ConversationRow: View {
                     .frame(width: 48, height: 48)
                     .clipShape(frame)
             } else {
+                // Soft brand tint rather than `avCard`: the rows are now `avCard`
+                // too, so an `avCard` placeholder would vanish into the row.
                 frame
-                    .fill(Color.avCard)
+                    .fill(Color.avBrand.opacity(0.15))
                     .frame(width: 48, height: 48)
                     .overlay {
                         Image(systemName: conversation.isGroup ? "person.3" : "person")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.avBrand)
                     }
             }
 
@@ -132,7 +138,7 @@ struct ConversationRow: View {
                     Spacer()
 
                     // Multi-account: show which identity this chat belongs to
-                    if let account, showAccountIndicator {
+                    if let account, showsAccountBadge {
                         Text(account.displayName.prefix(1).uppercased())
                             .font(.caption2)
                             .fontWeight(.medium)
@@ -154,10 +160,6 @@ struct ConversationRow: View {
             }
         }
         .padding(.vertical, 2)
-    }
-
-    private var showAccountIndicator: Bool {
-        appState.accounts.count > 1
     }
 
     /// Chat-list timestamp label (shared format across iOS/Android/Desktop). Uses

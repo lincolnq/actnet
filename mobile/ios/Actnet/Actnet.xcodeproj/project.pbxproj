@@ -10,6 +10,7 @@
 		016C20C3EFB4FFF30A694B4C /* NotificationServiceExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5289F25251781F59FABA4C9F /* NotificationServiceExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		02D3B5CB514E83F202FCF801 /* NewAccountView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33A33BB9BDC1959B6580927C /* NewAccountView.swift */; };
 		038F7CD243E857170660F8CB /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14AE2F220E680D0CE0A5810E /* MainTabView.swift */; };
+		0EE2FD14BE6D0132681C9966 /* ConversationSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335312EB9AFD1BD9BE082887 /* ConversationSearchView.swift */; };
 		103DF0DDAC7F5B23DE740A3C /* AvatarEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FEB25309B2895AEB92AFDED /* AvatarEncoder.swift */; };
 		13EFDDD4D4EAF0011A5F39D2 /* ImageViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7143656F6857D58587F2936 /* ImageViewerView.swift */; };
 		13FCAE87ED7268E63190039B /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AC5E72995147ED8AD25E532 /* QRScannerView.swift */; };
@@ -152,6 +153,7 @@
 		2F41810D70D78B7CB00C38FA /* ActnetService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActnetService.swift; sourceTree = "<group>"; };
 		31F4B3D750152162A2A00C24 /* AppGroup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppGroup.swift; sourceTree = "<group>"; };
 		32115C1BD46227602D3C5A71 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		335312EB9AFD1BD9BE082887 /* ConversationSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationSearchView.swift; sourceTree = "<group>"; };
 		33A33BB9BDC1959B6580927C /* NewAccountView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewAccountView.swift; sourceTree = "<group>"; };
 		33DFBD00EC9EB892C4E9DB6C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		43C96DE459D704EBFA65B307 /* MessageActionsOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageActionsOverlay.swift; sourceTree = "<group>"; };
@@ -327,6 +329,7 @@
 				60B3DC7CBE016789D232757D /* ChatsView.swift */,
 				77499BEF2E32D27D96CCD2F1 /* ComposeMessageView.swift */,
 				C0BC2191A5A534D46806501B /* ConversationRow.swift */,
+				335312EB9AFD1BD9BE082887 /* ConversationSearchView.swift */,
 				2C83A54ACCB386940D8E4689 /* ConversationView.swift */,
 				6C69AF8A0D806372AF28BDA9 /* EditHistorySheet.swift */,
 				12909ED788E69B8A5410A505 /* EmojiData.swift */,
@@ -635,6 +638,7 @@
 				784454627F0BB442850E2F3A /* ContactAvatar.swift in Sources */,
 				947A00551C7A5A62A0638A14 /* Conversation.swift in Sources */,
 				C8BE5993A5A4E8838F9D0C29 /* ConversationRow.swift in Sources */,
+				0EE2FD14BE6D0132681C9966 /* ConversationSearchView.swift in Sources */,
 				FE24D043CB770E44A2F5F3EE /* ConversationView.swift in Sources */,
 				1626F0227BC811D82FDAE1E4 /* CutCornerRectangle.swift in Sources */,
 				25BD1E1E253DCEBC39F160D4 /* DevServerActnetService.swift in Sources */,
@@ -739,7 +743,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Actnet.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 625;
+				CURRENT_PROJECT_VERSION = 635;
 				DEVELOPMENT_TEAM = 7FVK3RR3TV;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -772,7 +776,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ../NotificationServiceExtension/NotificationServiceExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 625;
+				CURRENT_PROJECT_VERSION = 635;
 				DEVELOPMENT_TEAM = 7FVK3RR3TV;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -799,7 +803,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ../ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 625;
+				CURRENT_PROJECT_VERSION = 635;
 				DEVELOPMENT_TEAM = 7FVK3RR3TV;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -941,7 +945,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ../NotificationServiceExtension/NotificationServiceExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 625;
+				CURRENT_PROJECT_VERSION = 635;
 				DEVELOPMENT_TEAM = 7FVK3RR3TV;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
@@ -968,7 +972,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ../ShareExtension/ShareExtension.entitlements;
-				CURRENT_PROJECT_VERSION = 625;
+				CURRENT_PROJECT_VERSION = 635;
 				DEVELOPMENT_TEAM = 7FVK3RR3TV;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -994,7 +998,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Actnet.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 625;
+				CURRENT_PROJECT_VERSION = 635;
 				DEVELOPMENT_TEAM = 7FVK3RR3TV;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
