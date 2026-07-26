@@ -1283,7 +1283,24 @@ async fn directory_put_surfaces_in_get_projects() {
     let (_, body) = admin_req(&app, "GET", "/v1/projects", "", None).await;
     let urls: Vec<_> = body.as_array().unwrap().iter().map(|p| p["url"].clone()).collect();
     assert!(!urls.contains(&serde_json::Value::String(url_a)), "old entry replaced");
-    assert!(urls.contains(&serde_json::Value::String(url_b)), "new entry present");
+    assert!(urls.contains(&serde_json::Value::String(url_b.clone())), "new entry present");
+
+    // Clean up: the test DB is shared with the local dev server (docs: Makefile
+    // TEST_DATABASE_URL == dev DATABASE_URL), and HTTP tests commit rather than
+    // roll back, so directory rows left here surface in the dev app's Network
+    // tab. A final empty PUT drops this project's entries via replace semantics.
+    let (status, _) = admin_req(
+        &app,
+        "PUT",
+        &format!("/v1/admin/projects/{slug}/directory"),
+        &admin_token,
+        Some(serde_json::json!({ "entries": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = admin_req(&app, "GET", "/v1/projects", "", None).await;
+    let urls: Vec<_> = body.as_array().unwrap().iter().map(|p| p["url"].clone()).collect();
+    assert!(!urls.contains(&serde_json::Value::String(url_b)), "entries cleaned up");
 }
 
 #[tokio::test]
