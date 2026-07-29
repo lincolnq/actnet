@@ -33,6 +33,18 @@ struct ConversationRow: View {
         return appState.avatar(for: did, accountId: conversation.accountId)
     }
 
+    /// Collapse a preview string to its first line — message bodies can contain
+    /// hard line breaks and the chat-list preview must never render past the
+    /// first line. Leading/trailing blank lines are trimmed first; the length
+    /// cap just guards against handing the label a pathologically long single
+    /// line (`.lineLimit(1)` then does the width-based ellipsis).
+    private func firstLinePreview(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let firstLine = trimmed.firstIndex(where: { $0.isNewline })
+            .map { String(trimmed[..<$0]) } ?? trimmed
+        return String(firstLine.prefix(200))
+    }
+
     /// Preview text for the latest message. For a group system event we render
     /// it reactively (resolving DIDs to names at display time), so it updates
     /// from "You made Unknown an admin" to the real name once profiles resolve —
@@ -52,13 +64,13 @@ struct ConversationRow: View {
                 kind: conversation.lastMessageKind,
                 metadata: conversation.lastMessageMetadata
             )
-            return appState.groupEventText(m, accountId: conversation.accountId)
+            return firstLinePreview(appState.groupEventText(m, accountId: conversation.accountId))
         }
         // Compose the content decoration (📷/📎/👤) with the body (docs/35): a
         // caption shows "📷 caption", a caption-less content message shows "📷
         // Photo", and plain text shows just the body. Kept in sync between live
         // and post-restart previews via `lastMessagePreview`.
-        let rawBody = conversation.lastMessage ?? ""
+        let rawBody = firstLinePreview(conversation.lastMessage ?? "")
         let body: String
         if let deco = lastMessagePreviewDecoration(conversation.lastMessagePreview) {
             body = rawBody.isEmpty ? "\(deco.icon) \(deco.noun)" : "\(deco.icon) \(rawBody)"
