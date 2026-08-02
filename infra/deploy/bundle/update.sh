@@ -44,6 +44,10 @@ activate() {
     systemctl restart avalanche
     systemctl reload caddy 2>/dev/null || systemctl restart caddy || true
   fi
+  # Refresh first-party Project manifests before restarting the bots, so adminbot
+  # (re)installs them at startup — keeps the DB directory + OAuth login current
+  # across upgrades without a manual /install-project. No-op on a bot-only host.
+  write_project_manifests
   for c in "${comps[@]}"; do
     [ "$c" = "server" ] && continue
     systemctl restart "avalanche-$c"

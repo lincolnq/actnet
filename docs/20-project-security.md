@@ -288,7 +288,9 @@ The manifest is the artifact the admin's tooling reads at install time to learn 
   "permissions": ["accounts.read"],
   "webEntries": [
     { "name": "Beagle", "url": "https://beagle.example.org/", "description": "Get a beagle fact." }
-  ]
+  ],
+  "clientId": "beagle.example.org",
+  "redirectUris": ["https://beagle.example.org/oauth/callback"]
 }
 ```
 
@@ -297,7 +299,8 @@ The manifest is the artifact the admin's tooling reads at install time to learn 
 - `description` — optional one-line summary, shown to the admin at install.
 - `url` — optional; the Project's web origin, for a webview Project. Omitted for a headless bot.
 - `permissions` — the permission ids it requests, drawn from the single dot-separated namespace above: any of the client-honored *scopes* and/or the *server-enforced capabilities* (`accounts.read`, `registration.gatekeeper`). **Default-deny** — the admin approves which to grant; anything unlisted is never granted. The manifest declares a *request*, not authority; the grant is the admin's act, recorded server-side.
-- `webEntries` — optional; the web pages this Project publishes in the client **Network tab** (the project directory, `GET /v1/projects`). Each entry is `{name, url, description?}`. The admin reviews them at install; they are stored server-side in the `directory_entries` table (replace-semantics per Project, `ON DELETE CASCADE` on uninstall) and are **always non-official** (officialness is server-vouched, never self-declared — `54-bots-and-verification.md`) with no OAuth `client_id`. Untrusted input: capped at 10 entries, `http(s)`-only URLs, name ≤100 and description ≤280 chars, trimmed, control-chars rejected. **OAuth "Sign in with Avalanche" for manifest-declared entries is a deferred follow-up** (the `client_id`/`official` columns exist and are populated only by the one-time seed of legacy operator entries).
+- `webEntries` — optional; the web pages this Project publishes in the client **Network tab** (the project directory, `GET /v1/projects`). Each entry is `{name, url, description?}`. The admin reviews them at install; they are stored server-side in the `directory_entries` table (replace-semantics per Project, `ON DELETE CASCADE` on uninstall) and are **always non-official** (officialness is server-vouched, never self-declared — `54-bots-and-verification.md`). Untrusted input: capped at 10 entries, `http(s)`-only URLs, name ≤100 and description ≤280 chars, trimmed, control-chars rejected. A directory entry surfaces its Project's OAuth `client_id` (below) by inheriting it via a join — the value is not copied onto the entry.
+- `clientId` / `redirectUris` — optional; the Project's **OAuth "Sign in with Avalanche"** registration (`25-project-login.md`). They land on the Project's `projects` row (the token audience is the Project's `url`), which is what `find_client` resolves a login request against. `clientId` is a stable public identifier, **unique across Projects** (a duplicate fails the install, so a manifest cannot claim another Project's login client). By convention it is the Project's **domain** (e.g. `beagle.example.org`) — a namespace the Project already controls, so collisions are self-avoiding and the value reads sensibly on the consent screen. This is a recommendation, not a validation rule (any unique string is accepted); `redirectUris` is the exact-match allowlist for the same-device flow (≤5, `http(s)`-only, only meaningful with a `clientId`). Both are **self-declared and self-constraining** (they only affect this Project's own login), so they carry no separate admin gesture beyond the install itself. The `official` verified-badge bit is the exception — never self-declared, operator-only.
 
 The manifest is **untrusted input** (Project-authored): sanitize and length-limit its strings, homoglyph-guard the name, and attribute every resulting surface to its `(server, Project)` — exactly as for the client-visible manifests under *multiple homeservers* above.
 

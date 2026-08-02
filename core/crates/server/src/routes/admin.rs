@@ -59,6 +59,67 @@ struct InstallProjectRequest {
     /// the bot's keys).
     #[serde(default)]
     bot_dids: Vec<String>,
+    /// OAuth "Sign in with Avalanche" client id (docs/25), if this Project offers
+    /// login. Self-declared in the manifest; unique across Projects. Omit if the
+    /// Project does not do login.
+    #[serde(default)]
+    client_id: Option<String>,
+    /// Exact-match `redirect_uri` allowlist for the same-device (PKCE) login flow.
+    /// Only meaningful alongside `client_id`.
+    #[serde(default)]
+    redirect_uris: Vec<String>,
+}
+
+// OAuth client-registration caps (docs/25). A `client_id` is a stable public
+// identifier; `redirect_uris` is a small exact-match allowlist. Mirrored in the
+// adminbot manifest validator.
+const MAX_CLIENT_ID_LEN: usize = 128;
+const MAX_REDIRECT_URIS: usize = 5;
+const MAX_REDIRECT_URI_LEN: usize = 512;
+
+/// Validate + normalize a Project's optional OAuth registration. Returns the
+/// trimmed `(client_id, redirect_uris)`. Untrusted input (manifest-supplied), so
+/// it is re-validated here independently of any client-side check.
+fn clean_oauth_registration(
+    client_id: Option<String>,
+    redirect_uris: Vec<String>,
+) -> Result<(Option<String>, Vec<String>), ServerError> {
+    let client_id = client_id.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+    // redirect_uris are only meaningful with a client_id.
+    if client_id.is_none() && !redirect_uris.is_empty() {
+        return Err(ServerError::BadRequest(
+            "redirect_uris require a client_id".into(),
+        ));
+    }
+    let Some(client_id) = client_id else {
+        return Ok((None, Vec::new()));
+    };
+    if client_id.len() > MAX_CLIENT_ID_LEN
+        || !client_id.bytes().all(|b| b.is_ascii_graphic())
+    {
+        return Err(ServerError::BadRequest(format!(
+            "client_id must be 1–{MAX_CLIENT_ID_LEN} non-space ASCII characters"
+        )));
+    }
+    if redirect_uris.len() > MAX_REDIRECT_URIS {
+        return Err(ServerError::BadRequest(format!(
+            "at most {MAX_REDIRECT_URIS} redirect_uris are allowed"
+        )));
+    }
+    let mut out = Vec::with_capacity(redirect_uris.len());
+    for u in redirect_uris {
+        let u = u.trim().to_string();
+        if u.len() > MAX_REDIRECT_URI_LEN
+            || !(u.starts_with("http://") || u.starts_with("https://"))
+            || u.chars().any(char::is_control)
+        {
+            return Err(ServerError::BadRequest(
+                "each redirect_uri must be an http(s) URL with no control characters".into(),
+            ));
+        }
+        out.push(u);
+    }
+    Ok((Some(client_id), out))
 }
 
 #[derive(Serialize)]
@@ -102,11 +163,52 @@ async fn install_project(
         return Err(ServerError::BadRequest("name must be 1–100 chars".into()));
     }
 
+    let (client_id, redirect_uris) =
+        clean_oauth_registration(req.client_id, req.redirect_uris)?;
+
     let mut conn = state.db.acquire().await?;
-    if db::projects::find_by_slug(&mut conn, &req.slug).await?.is_some() {
-        return Err(ServerError::Conflict("project slug already exists".into()));
+    // Install is an upsert: a manifest for a new slug creates the Project; for an
+    // existing slug it refreshes its name/url/OAuth registration (docs/25), so
+    // re-installing to set or rotate the login client works rather than no-oping.
+    let existing = db::projects::find_by_slug(&mut conn, &req.slug).await?;
+    // A client_id is unique across Projects. Reject only if it's owned by a
+    // *different* Project — re-registering this same slug's own client_id is fine.
+    if let Some(cid) = &client_id {
+        if let Some(owner) = db::projects::find_by_oauth_client_id(&mut conn, cid).await? {
+            let same = existing.as_ref().is_some_and(|e| e.id == owner.id);
+            if !same {
+                return Err(ServerError::Conflict(
+                    "oauth client_id already registered by another project".into(),
+                ));
+            }
+        }
     }
-    let project_id = db::projects::create(&mut conn, &req.slug, &req.name, req.url.as_deref()).await?;
+    let (project_id, created) = match &existing {
+        Some(p) => {
+            db::projects::update_registration(
+                &mut conn,
+                p.id,
+                &req.name,
+                req.url.as_deref(),
+                client_id.as_deref(),
+                &redirect_uris,
+            )
+            .await?;
+            (p.id, false)
+        }
+        None => {
+            let id = db::projects::create(
+                &mut conn,
+                &req.slug,
+                &req.name,
+                req.url.as_deref(),
+                client_id.as_deref(),
+                &redirect_uris,
+            )
+            .await?;
+            (id, true)
+        }
+    };
 
     for did in &req.bot_dids {
         let account = db::accounts::find_by_did(&mut conn, did)
@@ -115,9 +217,13 @@ async fn install_project(
         db::projects::link_bot(&mut conn, project_id, account.id).await?;
     }
 
-    tracing::info!(slug = %req.slug, by = %auth.did, "project installed");
+    tracing::info!(slug = %req.slug, by = %auth.did, created, "project installed");
     Ok((
-        axum::http::StatusCode::CREATED,
+        if created {
+            axum::http::StatusCode::CREATED
+        } else {
+            axum::http::StatusCode::OK
+        },
         Json(json!({ "slug": req.slug })),
     ))
 }

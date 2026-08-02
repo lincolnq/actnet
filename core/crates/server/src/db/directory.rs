@@ -2,12 +2,12 @@
 //! (docs/20, docs/22).
 //!
 //! `GET /v1/projects` reads [`list`]; adminbot's `/install-project` manifest
-//! drives per-Project entries via [`replace_for_project`]; a one-time startup
-//! seed ([`is_empty`] + [`seed`]) migrates any legacy `PROJECTS` env content in.
+//! drives per-Project entries via [`replace_for_project`]. Every entry is created
+//! through a manifest install.
 //!
-//! An entry with `project_id = Some(..)` belongs to an installed Project and is
-//! dropped by `ON DELETE CASCADE` when that Project is uninstalled; an entry
-//! with `project_id = None` is an operator/seeded row managed directly.
+//! An entry's `project_id` references the installed Project it belongs to and is
+//! dropped by `ON DELETE CASCADE` when that Project is uninstalled. (The column
+//! is nullable for historical unowned rows, but new rows always set it.)
 //!
 //! This table has NO did/account_id column — it is directory metadata only, so
 //! the membership-opacity discipline (docs/03 §3.9) does not apply.
@@ -32,21 +32,16 @@ pub struct ProjectEntry {
     pub description: String,
 }
 
-/// A legacy `PROJECTS`-env entry to seed once at startup, preserving its
-/// operator-set `official` flag and OAuth `client_id`.
-pub struct SeedEntry {
-    pub name: String,
-    pub url: String,
-    pub description: String,
-    pub client_id: Option<String>,
-    pub official: bool,
-}
-
-/// Every directory entry, in display order.
+/// Every directory entry, in display order. The OAuth `client_id` is *inherited*
+/// from the owning Project (`projects.oauth_client_id`) via a join — the
+/// authoritative registration lives on the Project entity (docs/25), not copied
+/// onto each directory row. Unowned/seeded rows (`project_id IS NULL`) have none.
 pub async fn list(conn: &mut PgConnection) -> Result<Vec<DirectoryEntry>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT name, url, description, client_id, official
-         FROM directory_entries ORDER BY position, id",
+        "SELECT d.name, d.url, d.description, p.oauth_client_id AS client_id, d.official
+         FROM directory_entries d
+         LEFT JOIN projects p ON p.id = d.project_id
+         ORDER BY d.position, d.id",
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -84,40 +79,6 @@ pub async fn replace_for_project(
         .bind(&e.name)
         .bind(&e.url)
         .bind(&e.description)
-        .bind(i as i32)
-        .execute(&mut *tx)
-        .await?;
-    }
-    tx.commit().await?;
-    Ok(())
-}
-
-/// Whether the directory table has no rows yet (the one-time startup seed
-/// guard — once seeded, later `PROJECTS` env edits are ignored).
-pub async fn is_empty(conn: &mut PgConnection) -> Result<bool, sqlx::Error> {
-    let row = sqlx::query("SELECT EXISTS (SELECT 1 FROM directory_entries) AS present")
-        .fetch_one(&mut *conn)
-        .await?;
-    let present: bool = row.get("present");
-    Ok(!present)
-}
-
-/// Seed operator entries (from the legacy `PROJECTS` env var) as unowned
-/// (`project_id = NULL`) rows, preserving their `official`/`client_id`. Caller
-/// guards on [`is_empty`].
-pub async fn seed(conn: &mut PgConnection, entries: &[SeedEntry]) -> Result<(), sqlx::Error> {
-    let mut tx = conn.begin().await?;
-    for (i, e) in entries.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO directory_entries
-                (project_id, name, url, description, client_id, official, position)
-             VALUES (NULL, $1, $2, $3, $4, $5, $6)",
-        )
-        .bind(&e.name)
-        .bind(&e.url)
-        .bind(&e.description)
-        .bind(&e.client_id)
-        .bind(e.official)
         .bind(i as i32)
         .execute(&mut *tx)
         .await?;

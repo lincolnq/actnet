@@ -17,21 +17,34 @@ pub struct Project {
     pub name: String,
     pub url: Option<String>,
     pub signing_public_key: Option<Vec<u8>>,
+    /// OAuth "Sign in with Avalanche" client id (docs/25), if this Project offers
+    /// login. `None` for the common case. Unique across Projects.
+    pub oauth_client_id: Option<String>,
+    /// Exact-match allowlist of `redirect_uri`s for this Project's login client.
+    /// Empty unless `oauth_client_id` is set.
+    pub oauth_redirect_uris: Vec<String>,
 }
 
-/// Create a Project. Returns its internal id. Errors on duplicate slug.
+/// Create a Project. Returns its internal id. Errors on duplicate slug, or on a
+/// duplicate `oauth_client_id` (the UNIQUE constraint — surfaced as a conflict
+/// so a manifest cannot claim another Project's login client id).
 pub async fn create(
     conn: &mut PgConnection,
     slug: &str,
     name: &str,
     url: Option<&str>,
+    oauth_client_id: Option<&str>,
+    oauth_redirect_uris: &[String],
 ) -> Result<i64, sqlx::Error> {
     let row = sqlx::query(
-        "INSERT INTO projects (slug, name, url) VALUES ($1, $2, $3) RETURNING id",
+        "INSERT INTO projects (slug, name, url, oauth_client_id, oauth_redirect_uris)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id",
     )
     .bind(slug)
     .bind(name)
     .bind(url)
+    .bind(oauth_client_id)
+    .bind(oauth_redirect_uris)
     .fetch_one(&mut *conn)
     .await?;
     Ok(row.get("id"))
@@ -55,41 +68,84 @@ pub async fn ensure_adminbot_project(
     Ok(row.get("id"))
 }
 
+/// Update an existing Project's installable fields (name, url, OAuth
+/// registration) — the update half of an install upsert, so re-installing a
+/// manifest for an existing slug refreshes it (docs/25) rather than being a
+/// no-op. Leaves `slug` and `signing_public_key` untouched.
+pub async fn update_registration(
+    conn: &mut PgConnection,
+    project_id: i64,
+    name: &str,
+    url: Option<&str>,
+    oauth_client_id: Option<&str>,
+    oauth_redirect_uris: &[String],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE projects
+         SET name = $2, url = $3, oauth_client_id = $4, oauth_redirect_uris = $5
+         WHERE id = $1",
+    )
+    .bind(project_id)
+    .bind(name)
+    .bind(url)
+    .bind(oauth_client_id)
+    .bind(oauth_redirect_uris)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 pub async fn find_by_slug(
     conn: &mut PgConnection,
     slug: &str,
 ) -> Result<Option<Project>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT id, slug, name, url, signing_public_key FROM projects WHERE slug = $1",
+        "SELECT id, slug, name, url, signing_public_key, oauth_client_id, oauth_redirect_uris
+         FROM projects WHERE slug = $1",
     )
     .bind(slug)
     .fetch_optional(&mut *conn)
     .await?;
-    Ok(row.map(|r| Project {
+    Ok(row.map(row_to_project))
+}
+
+/// Resolve a Project by its OAuth login `client_id` (docs/25). `None` if no
+/// Project registered that client id. Used by the OAuth endpoints to resolve a
+/// login request's `client_id` to its token audience (`url`) + redirect allowlist.
+pub async fn find_by_oauth_client_id(
+    conn: &mut PgConnection,
+    client_id: &str,
+) -> Result<Option<Project>, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT id, slug, name, url, signing_public_key, oauth_client_id, oauth_redirect_uris
+         FROM projects WHERE oauth_client_id = $1",
+    )
+    .bind(client_id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(row.map(row_to_project))
+}
+
+pub async fn list(conn: &mut PgConnection) -> Result<Vec<Project>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, slug, name, url, signing_public_key, oauth_client_id, oauth_redirect_uris
+         FROM projects ORDER BY slug",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(rows.into_iter().map(row_to_project).collect())
+}
+
+fn row_to_project(r: sqlx::postgres::PgRow) -> Project {
+    Project {
         id: r.get("id"),
         slug: r.get("slug"),
         name: r.get("name"),
         url: r.get("url"),
         signing_public_key: r.get("signing_public_key"),
-    }))
-}
-
-pub async fn list(conn: &mut PgConnection) -> Result<Vec<Project>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT id, slug, name, url, signing_public_key FROM projects ORDER BY slug",
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| Project {
-            id: r.get("id"),
-            slug: r.get("slug"),
-            name: r.get("name"),
-            url: r.get("url"),
-            signing_public_key: r.get("signing_public_key"),
-        })
-        .collect())
+        oauth_client_id: r.get("oauth_client_id"),
+        oauth_redirect_uris: r.get("oauth_redirect_uris"),
+    }
 }
 
 /// Delete a Project and its capability + bot-link rows in one transaction.

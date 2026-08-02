@@ -5,7 +5,6 @@ The push relay is a separate, single-instance service shared across all
 environments (dev + production). It is not launched here — point the
 homeserver at the running relay by setting RELAY_URL in .env."""
 
-import json
 import os
 import pathlib
 import signal
@@ -42,6 +41,7 @@ def project_host():
 PROJECTS = [
     {
         "name": "Testbot",
+        "slug": "testbot",
         "description": "Chat with an AI bot",
         "dist": "packages/testbot/dist/index.js",
         "bind_env": "TESTBOT_BIND_ADDR",
@@ -50,6 +50,11 @@ PROJECTS = [
         # Avalanche" demo at <url>/login works. The redirect_uri is derived from
         # the phone-reachable project url below; public_url_env tells the service
         # that same url so its redirect_uri matches byte-for-byte.
+        #
+        # OAuth registration lives on the `projects` DB row (docs/25). In prod an
+        # operator installs a login-capable Project via adminbot's manifest; dev
+        # has no superuser token to call that admin API, so `seed_project_row`
+        # writes the row + directory entry directly (the dev-only equivalent).
         "oauth_client_id": "testbot",
         "public_url_env": "TESTBOT_PUBLIC_URL",
     },
@@ -94,6 +99,49 @@ def wait_for_postgres():
         if "healthy" in result.stdout:
             break
         time.sleep(1)
+
+
+def seed_project_row(slug, name, description, url, client_id=None, redirect_uri=None):
+    """Dev-only: install a Project (and its Network-tab entry) directly in the DB.
+
+    Projects are installed via adminbot's manifest in prod, but dev has no
+    superuser token for that admin API — so we write the `projects` row and its
+    `directory_entries` row directly, the dev equivalent of a manifest install
+    (docs/22, docs/25). For a login-capable Project, `client_id` + `redirect_uri`
+    register its OAuth "Sign in with Avalanche" client on the same row (docs/25);
+    the directory entry inherits the `client_id` via the join in
+    `GET /v1/projects`. Idempotent so `make dev-all` re-runs cleanly.
+    """
+    if client_id:
+        print(f"  Seeding Project '{slug}' (OAuth client '{client_id}') -> {url}")
+        oauth_cols = ", oauth_client_id, oauth_redirect_uris"
+        oauth_vals = f", '{client_id}', ARRAY['{redirect_uri}']"
+        oauth_set = (
+            "oauth_client_id = EXCLUDED.oauth_client_id, "
+            "oauth_redirect_uris = EXCLUDED.oauth_redirect_uris"
+        )
+    else:
+        print(f"  Seeding Project '{slug}' -> {url}")
+        oauth_cols = ""
+        oauth_vals = ""
+        oauth_set = "oauth_client_id = NULL, oauth_redirect_uris = '{}'"
+    sql = f"""
+    INSERT INTO projects (slug, name, url{oauth_cols})
+    VALUES ('{slug}', '{name}', '{url}'{oauth_vals})
+    ON CONFLICT (slug) DO UPDATE SET
+        name = EXCLUDED.name, url = EXCLUDED.url, {oauth_set};
+    DELETE FROM directory_entries
+        WHERE project_id = (SELECT id FROM projects WHERE slug = '{slug}');
+    INSERT INTO directory_entries (project_id, name, url, description, position)
+        SELECT id, '{name}', '{url}', '{description}', 0
+        FROM projects WHERE slug = '{slug}';
+    """
+    subprocess.run(
+        ["docker", "compose", "-f", INFRA_COMPOSE, "exec", "-T", "postgres",
+         "psql", "-U", "actnet", "-d", "actnet", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        env={**os.environ, "PGPASSWORD": "actnet-dev"},
+        check=True,
+    )
 
 
 def run_migrations():
@@ -290,30 +338,28 @@ def main():
     wait_for_postgres()
     run_migrations()
 
-    # Assign ports and build PROJECTS JSON for the server.
+    # Assign ports and install each dev Project directly in the DB (the dev
+    # equivalent of an adminbot manifest install).
     # Project URLs use the same host clients use to reach the homeserver
     # (from SERVER_URL), so a Tailscale / LAN dev setup also gives phones
     # a reachable URL for project webviews.
     scheme, host = project_host()
     next_port = 3001
-    projects_json = []
     project_launches = []
     for project in PROJECTS:
         port = next_port
         next_port += 1
         url = f"{scheme}://{host}:{port}"
-        entry = {
-            "name": project["name"],
-            "url": url,
-            "description": project["description"],
-        }
-        # OAuth login client (docs/25): register client_id + the /login
-        # redirect_uri (phone-reachable) so "Sign in with Avalanche" works.
-        if project.get("oauth_client_id"):
-            entry["client_id"] = project["oauth_client_id"]
-            entry["redirect_uris"] = [f"{url}/login"]
-            entry["official"] = True
-        projects_json.append(entry)
+        oauth_cid = project.get("oauth_client_id")
+        seed_project_row(
+            slug=project["slug"],
+            name=project["name"],
+            description=project["description"],
+            url=url,
+            client_id=oauth_cid,
+            # Login-capable Projects register the <url>/login redirect (docs/25).
+            redirect_uri=f"{url}/login" if oauth_cid else None,
+        )
         project_launches.append((project, port))
 
     # Free any port left bound by an orphaned service from a previous dev run
@@ -350,7 +396,7 @@ def main():
         # bootstrap token. Override REGISTRATION_MODE=open for quick hacking.
         # Attachment blobs (docs/35) land under the repo-root dev-state/ tree
         # (gitignored, wiped by `make db-reset`), alongside the bots' stores.
-        env={**os.environ, "PROJECTS": json.dumps(projects_json), "RUST_LOG": "tower_http=debug,server=debug", "ACTNET_ALLOW_DEV_DB": "1", "ACTNET_DISABLE_IP_RATE_LIMITS": "1", "REGISTRATION_SHARED_SECRET": DEV_SHARED_SECRET, "PRIVACY_POLICY_URL": privacy_policy_url, "ATTACHMENT_BLOB_DIR": os.path.join(REPO_DIR, "dev-state", "attachments")},
+        env={**os.environ, "RUST_LOG": "tower_http=debug,server=debug", "ACTNET_ALLOW_DEV_DB": "1", "ACTNET_DISABLE_IP_RATE_LIMITS": "1", "REGISTRATION_SHARED_SECRET": DEV_SHARED_SECRET, "PRIVACY_POLICY_URL": privacy_policy_url, "ATTACHMENT_BLOB_DIR": os.path.join(REPO_DIR, "dev-state", "attachments")},
     ))
 
     for project, port in project_launches:

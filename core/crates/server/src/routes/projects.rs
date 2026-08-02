@@ -40,9 +40,9 @@ struct ProjectInfo {
 async fn list_projects(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ProjectInfo>>, ServerError> {
-    // The directory is DB-backed (docs/22): manifest-driven entries plus any
-    // legacy PROJECTS env rows seeded once at startup (see main.rs). The wire
-    // shape is unchanged, so clients need no change.
+    // The directory is DB-backed (docs/22): entries are published by adminbot's
+    // /install-project manifest. Each entry inherits its Project's OAuth
+    // `client_id` via a join (see db::directory::list).
     let mut conn = state.db.acquire().await?;
     let entries = db::directory::list(&mut conn).await?;
     let projects = entries

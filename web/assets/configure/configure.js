@@ -55,8 +55,11 @@ function render() {
     TEXT_FIELDS.map(f => [f, document.getElementById(f).value.trim()])
   );
   const releaseTag = document.getElementById('release_tag').value.trim() || DEFAULT_RELEASE_TAG;
-  const adminbot = document.getElementById('install_adminbot').checked;
+  // Testbot's Network-tab listing and "Sign in with Avalanche" login are
+  // installed by adminbot (via a manifest at startup), so testbot needs adminbot.
   const testbot = document.getElementById('install_testbot').checked;
+  if (testbot) document.getElementById('install_adminbot').checked = true;
+  const adminbot = document.getElementById('install_adminbot').checked;
   const url = inviteUrl(values.server_url);
 
   // The cloud-init is a thin bootstrap; bot selection is passed as INSTALL_*
