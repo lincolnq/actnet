@@ -167,27 +167,48 @@ async fn install_project(
         clean_oauth_registration(req.client_id, req.redirect_uris)?;
 
     let mut conn = state.db.acquire().await?;
-    if db::projects::find_by_slug(&mut conn, &req.slug).await?.is_some() {
-        return Err(ServerError::Conflict("project slug already exists".into()));
-    }
-    // A client_id is unique across Projects (a manifest must not claim another
-    // Project's login client id). Pre-check for a clear error before insert.
+    // Install is an upsert: a manifest for a new slug creates the Project; for an
+    // existing slug it refreshes its name/url/OAuth registration (docs/25), so
+    // re-installing to set or rotate the login client works rather than no-oping.
+    let existing = db::projects::find_by_slug(&mut conn, &req.slug).await?;
+    // A client_id is unique across Projects. Reject only if it's owned by a
+    // *different* Project — re-registering this same slug's own client_id is fine.
     if let Some(cid) = &client_id {
-        if db::projects::find_by_oauth_client_id(&mut conn, cid).await?.is_some() {
-            return Err(ServerError::Conflict(
-                "oauth client_id already registered by another project".into(),
-            ));
+        if let Some(owner) = db::projects::find_by_oauth_client_id(&mut conn, cid).await? {
+            let same = existing.as_ref().is_some_and(|e| e.id == owner.id);
+            if !same {
+                return Err(ServerError::Conflict(
+                    "oauth client_id already registered by another project".into(),
+                ));
+            }
         }
     }
-    let project_id = db::projects::create(
-        &mut conn,
-        &req.slug,
-        &req.name,
-        req.url.as_deref(),
-        client_id.as_deref(),
-        &redirect_uris,
-    )
-    .await?;
+    let (project_id, created) = match &existing {
+        Some(p) => {
+            db::projects::update_registration(
+                &mut conn,
+                p.id,
+                &req.name,
+                req.url.as_deref(),
+                client_id.as_deref(),
+                &redirect_uris,
+            )
+            .await?;
+            (p.id, false)
+        }
+        None => {
+            let id = db::projects::create(
+                &mut conn,
+                &req.slug,
+                &req.name,
+                req.url.as_deref(),
+                client_id.as_deref(),
+                &redirect_uris,
+            )
+            .await?;
+            (id, true)
+        }
+    };
 
     for did in &req.bot_dids {
         let account = db::accounts::find_by_did(&mut conn, did)
@@ -196,9 +217,13 @@ async fn install_project(
         db::projects::link_bot(&mut conn, project_id, account.id).await?;
     }
 
-    tracing::info!(slug = %req.slug, by = %auth.did, "project installed");
+    tracing::info!(slug = %req.slug, by = %auth.did, created, "project installed");
     Ok((
-        axum::http::StatusCode::CREATED,
+        if created {
+            axum::http::StatusCode::CREATED
+        } else {
+            axum::http::StatusCode::OK
+        },
         Json(json!({ "slug": req.slug })),
     ))
 }

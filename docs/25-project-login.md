@@ -152,8 +152,7 @@ A Project registers as an OAuth client at **admin-install time** by declaring th
 fields below in its **install manifest** (docs/20, docs/22). They land on the
 Project's `projects` row (`oauth_client_id`, `oauth_redirect_uris`; audience =
 the Project's existing `url`) and `find_client` resolves an incoming login
-request against that row. OAuth clients are **not** configured via the `PROJECTS`
-env var — a Project *is* the registry.
+request against that row — a Project *is* the registry.
 
 - `clientId` — stable public identifier used in authorize/token/device requests.
   **Unique across Projects** (a manifest cannot claim another Project's client id

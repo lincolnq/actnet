@@ -29,9 +29,12 @@ u="$(component_unit "$name")"
 install -m 644 "$CURRENT/deploy/systemd/$u" "/etc/systemd/system/$u"
 systemctl daemon-reload
 systemctl enable --now "avalanche-$name"
-# Refresh the client directory + Caddy routes, then pick them up (no-ops on a
-# bot-only host with no server/caddy).
-regenerate_projects
+# Refresh the Caddy routes and the Project manifests, then pick them up. The
+# manifest gives adminbot this Project's client-directory entry + OAuth login
+# registration; restarting adminbot makes it install them (docs/22, docs/25).
+# All are no-ops on a host without caddy/adminbot co-located.
+regenerate_project_routes
+write_project_manifests
 systemctl reload caddy 2>/dev/null || true
-systemctl try-restart avalanche 2>/dev/null || true
+systemctl try-restart avalanche-adminbot 2>/dev/null || true
 log "$name installed and started"

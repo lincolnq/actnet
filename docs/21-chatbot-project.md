@@ -136,7 +136,7 @@ CREATE TABLE project_tokens (
 ```
 
 **New endpoints:**
-- `GET /v1/projects` — returns the list of Projects installed on this server. For now, the list is hardcoded in the server config (e.g., `PROJECTS` env var or a config file). Returns `[{ "name": "Testbot", "url": "http://localhost:3001", "description": "Chat with an AI bot" }]`.
+- `GET /v1/projects` — returns the list of Projects installed on this server, read from the DB-backed directory (`directory_entries`, populated by adminbot's manifest install — see `22-adminbot.md`). Returns `[{ "name": "Testbot", "url": "http://localhost:3001", "description": "Chat with an AI bot" }]`.
 - `POST /v1/project-token` (authenticated) — generate a 32-byte random token, store with user's account ID and 1-hour expiry, return the token.
 - `GET /v1/project-token/verify?token=<token>` (unauthenticated) — look up the token, return `{ "did": "...", "project_url": "..." }` if valid, 401 if not.
 

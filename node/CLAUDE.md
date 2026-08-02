@@ -151,6 +151,7 @@ Adminbot persistent state lives under `ADMINBOT_STATE_DIR` (default: `node/admin
 | `ADMINBOT_STATE_DIR` | `node/adminbot-state` | SQLCipher DB + state.json location |
 | `ADMINBOT_INITIAL_ADMINS` | (empty) | Comma-separated DIDs to invite at bootstrap |
 | `ADMINBOT_DB_KEY` | (empty) | SQLCipher passphrase for the store |
+| `ADMINBOT_MANIFEST_DIR` | (empty) | Dir of Project manifests (`*.json`) to install non-interactively at startup (docs/22, docs/25). Set by the deploy bundle so web Projects auto-configure (directory entry + OAuth login) without a manual `/install-project`; unset in dev. Idempotent per restart. |
 
 ## Adding a new method to the API
 

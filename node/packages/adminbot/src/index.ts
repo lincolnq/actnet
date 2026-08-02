@@ -25,7 +25,7 @@
 //   - JSON sidecar at ADMINBOT_STATE_DIR/state.json — adminbot's own
 //     bookkeeping (group id, already-invited initial admins).
 
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -86,6 +86,11 @@ interface Env {
   initialAdmins: string[];
   logLevel: string;
   sharedSecret?: string;
+  /// Directory of Project manifests (`*.json`) to install non-interactively at
+  /// startup (docs/22, docs/25). The deploy bundle writes one per installed web
+  /// Project so retiring the `PROJECTS` env still auto-configures them (directory
+  /// entry + OAuth login). Unset → feature off (e.g. dev, which seeds directly).
+  manifestDir?: string;
   /// Path to the deployment's VERSION file (= the current release tag). The
   /// deploy bundle writes `/opt/avalanche/deployments/current/VERSION`; override
   /// for separate-host / dev runs. Missing/unreadable → version checks no-op.
@@ -114,6 +119,7 @@ function readEnv(): Env {
     // Bootstrap secret for closed-registration servers (docs/24). Required to
     // register against a closed server; unset/ignored on an open one.
     sharedSecret: process.env.REGISTRATION_SHARED_SECRET || undefined,
+    manifestDir: process.env.ADMINBOT_MANIFEST_DIR || undefined,
     versionFile: process.env.AVALANCHE_VERSION_FILE ?? "/opt/avalanche/deployments/current/VERSION",
   };
 }
@@ -207,6 +213,39 @@ async function inviteInitialAdmins(
   }
   state.invitedInitialAdmins = [...already];
   saveState(env.statePath, state);
+}
+
+// Install any Project manifests in `env.manifestDir` (*.json) non-interactively
+// at startup (docs/22, docs/25) — the deploy-bundle equivalent of a `PROJECTS`
+// env for the DB-backed directory, so a fresh install auto-configures each web
+// Project's directory entry + OAuth login without a manual /install-project.
+// Operator-authored via the deploy, so all requested permissions are auto-granted
+// (minus registration.gatekeeper, which needs a signing key this flow can't
+// supply — mirrors the interactive install). Idempotent: performInstall treats a
+// pre-existing slug as an update, so re-running on every restart is safe.
+async function autoInstallManifests(core: AppCore, env: Env): Promise<void> {
+  if (!env.manifestDir || !existsSync(env.manifestDir)) return;
+  let files: string[];
+  try {
+    files = readdirSync(env.manifestDir).filter((f) => f.endsWith(".json")).sort();
+  } catch (e) {
+    console.error(`adminbot: cannot read manifest dir ${env.manifestDir}: ${(e as Error).message}`);
+    return;
+  }
+  for (const file of files) {
+    try {
+      const manifest = await loadManifest(readFileSync(join(env.manifestDir, file), "utf8"));
+      const grant = manifest.permissions.filter((p) => p !== "registration.gatekeeper");
+      const result = await performInstall(core, env, manifest, grant);
+      // lines[0] is the "Installed/updated ..." summary; later lines may include
+      // the sensitive setup code, so only the summary is logged.
+      console.log(
+        `adminbot: auto-install ${file}: ${result.ok ? "ok" : "FAILED"} — ${result.lines[0] ?? ""}`,
+      );
+    } catch (e) {
+      console.error(`adminbot: auto-install ${file} failed: ${(e as Error).message}`);
+    }
+  }
 }
 
 async function handleMessage(
@@ -1170,6 +1209,7 @@ async function run(): Promise<void> {
     ensureAdminsGroup(core, env, state),
   );
   await inviteInitialAdmins(core, env, state, groupId);
+  await autoInstallManifests(core, env);
 
   console.log(`adminbot: listening for events on ${groupId}`);
 

@@ -51,9 +51,8 @@ struct ResolvedClient {
 /// Resolve a registered OAuth login client by `client_id` against the `projects`
 /// table (docs/25). A valid login client is a Project that carries both an
 /// `oauth_client_id` and a `url` (the token audience); a Project missing the url
-/// is not a usable login client. OAuth clients are no longer configured via the
-/// `PROJECTS` env var — a login-capable Project declares its client id/redirect
-/// uris in its install manifest, which lands on the `projects` row.
+/// is not a usable login client. A login-capable Project declares its client id
+/// and redirect uris in its install manifest, which lands on the `projects` row.
 async fn find_client(
     conn: &mut sqlx::PgConnection,
     client_id: &str,

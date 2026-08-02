@@ -16,8 +16,11 @@ rm -f "/etc/systemd/system/$u"
 systemctl daemon-reload
 rm -rf "${CURRENT:?}/$name"
 rm -f "$ETC/$name.env"
-# Refresh the client directory + Caddy routes (now without this Project).
-regenerate_projects
+# Refresh the Caddy routes + Project manifests (now without this Project). The
+# manifest is dropped, so adminbot won't re-install it — but it does NOT remove
+# the Project's existing DB directory entry; uninstall that via adminbot
+# (`/uninstall-project`) to drop it from the Network tab (docs/22).
+regenerate_project_routes
+write_project_manifests
 systemctl reload caddy 2>/dev/null || true
-systemctl try-restart avalanche 2>/dev/null || true
 log "$name removed (state under $SHARED/$name left intact)"

@@ -68,7 +68,6 @@ async fn test_state_with(
         oauth_auth_code_lifetime_secs: 120,
         oauth_device_code_lifetime_secs: 600,
         oauth_device_poll_interval_secs: 5,
-        projects_json: "[]".into(),
         relay_url: None,
         server_name: "Test".into(),
         invite_domain: "go.example.test".into(),
@@ -1334,8 +1333,8 @@ async fn oauth_client_registration_lives_on_the_project() {
     assert_eq!(entry["client_id"], serde_json::Value::String(client_id.clone()));
 
     // A user session drives the same-device authorize-code endpoint, which
-    // resolves client_id against the projects table (no PROJECTS-env fallback)
-    // and enforces the redirect allowlist.
+    // resolves client_id against the projects table and enforces the redirect
+    // allowlist.
     let (_did, session) = register_and_get_token(&app).await;
     let challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 
@@ -1367,7 +1366,7 @@ async fn oauth_client_registration_lives_on_the_project() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "unregistered redirect_uri rejected");
 
-    // Unknown client_id → rejected (env no longer configures OAuth clients).
+    // Unknown client_id → rejected.
     let (status, _) = admin_req(
         &app,
         "POST",
@@ -1395,6 +1394,91 @@ async fn oauth_client_registration_lives_on_the_project() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "duplicate client_id rejected");
+}
+
+#[tokio::test]
+async fn install_project_is_an_upsert() {
+    let _guard = GATEKEEPER_LOCK.lock().await;
+    let (app, _admin_did, admin_token) =
+        setup_adminbot(server::config::RegistrationMode::Open).await;
+
+    let slug = format!("up{}", unique_id());
+    let cid = format!("cid-{slug}");
+
+    // First install: no OAuth registration.
+    let (status, _) = admin_req(
+        &app,
+        "POST",
+        "/v1/admin/projects",
+        &admin_token,
+        Some(serde_json::json!({ "slug": slug, "name": "First", "url": format!("https://{slug}-1.test") })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Re-install the SAME slug, now WITH OAuth + a new url/name. This must update
+    // the row (200 OK), not conflict (409) and not silently skip the OAuth fields.
+    let base2 = format!("https://{slug}-2.test");
+    let redirect = format!("{base2}/cb");
+    let (status, _) = admin_req(
+        &app,
+        "POST",
+        "/v1/admin/projects",
+        &admin_token,
+        Some(serde_json::json!({
+            "slug": slug, "name": "Second", "url": base2,
+            "client_id": cid, "redirect_uris": [redirect],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "re-install updates rather than conflicting");
+
+    // The updated OAuth registration now resolves (authorize-code accepts the
+    // freshly-registered client + redirect) — proof the row was actually updated.
+    let (_did, session) = register_and_get_token(&app).await;
+    let challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+    let (status, body) = admin_req(
+        &app,
+        "POST",
+        "/v1/oauth/authorize-code",
+        &session,
+        Some(serde_json::json!({
+            "client_id": cid, "redirect_uri": redirect,
+            "code_challenge": challenge, "code_challenge_method": "S256",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "updated client_id + redirect resolve");
+    assert!(body["code"].as_str().is_some());
+
+    // A *different* Project still cannot claim that client_id.
+    let slug2 = format!("up{}", unique_id());
+    let (status, _) = admin_req(
+        &app,
+        "POST",
+        "/v1/admin/projects",
+        &admin_token,
+        Some(serde_json::json!({
+            "slug": slug2, "name": "Other", "url": format!("https://{slug2}.test"),
+            "client_id": cid,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "client_id owned by another project rejected");
+
+    // Re-registering the SAME slug's own client_id again is idempotent (200).
+    let (status, _) = admin_req(
+        &app,
+        "POST",
+        "/v1/admin/projects",
+        &admin_token,
+        Some(serde_json::json!({
+            "slug": slug, "name": "Second", "url": base2,
+            "client_id": cid, "redirect_uris": [redirect],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "re-registering own client_id is fine");
 }
 
 #[tokio::test]

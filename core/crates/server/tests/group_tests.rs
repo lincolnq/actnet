@@ -57,7 +57,6 @@ async fn test_state() -> AppState {
         oauth_auth_code_lifetime_secs: 120,
         oauth_device_code_lifetime_secs: 600,
         oauth_device_poll_interval_secs: 5,
-        projects_json: "[]".into(),
         relay_url: None,
         server_name: "Test".into(),
         invite_domain: "go.example.test".into(),

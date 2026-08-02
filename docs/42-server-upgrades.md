@@ -39,15 +39,19 @@ every host (server or Project) has its own `deployments/<tag>/` + `current`
 symlink and its own copy of `av-deploy`, and runs the identical install/update
 machinery over whatever component(s) it hosts.
 
-**Client directory (Network tab) note.** The install/update scripts still write
-the `PROJECTS` env var (and Caddy routes) via `regenerate_projects` when a bot is
-installed, but the server now treats `PROJECTS` only as a **one-time seed source**
-for the DB-backed directory (`directory_entries`; `GET /v1/projects` reads the DB
-— see `22-adminbot.md`). So an installed bot like testbot still appears in the
-Network tab (its `PROJECTS` entry is seeded into the DB on first boot), with no
-deploy change required. Reconciling the deploy scripts to drive the DB directory
-directly (and retire the `PROJECTS`-env half of `regenerate_projects`) is a
-tracked follow-up (`02-todos-deferred.md`).
+**Client directory (Network tab) note.** The client directory is DB-backed
+(`directory_entries`; `GET /v1/projects` reads the DB — see `22-adminbot.md`) and
+each entry — plus the Project's OAuth login registration (`25-project-login.md`)
+— is published by an adminbot `/install-project` manifest. The deploy bundle
+wires this automatically: for each
+installed web Project it writes a manifest into `$SHARED/manifests`
+(`write_project_manifests`) and points adminbot at it (`ADMINBOT_MANIFEST_DIR`),
+which installs them non-interactively at startup. So `avalanche-install-project`
+(and the setup page's testbot toggle) fully configure a web Project — process +
+Caddy route + directory entry + login — as long as adminbot is installed on the
+host. `regenerate_project_routes` handles only the Caddy `/p/<slug>/*` routing.
+(Uninstalling a Project's directory entry is still a manual adminbot step — see
+`02-todos-deferred.md`.)
 
 Some Projects keep **local state** (adminbot has a SQLCipher `store.db` +
 `state.json`; testbot is stateless). It lives under `shared/<project>/` so it

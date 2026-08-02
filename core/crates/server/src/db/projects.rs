@@ -68,6 +68,33 @@ pub async fn ensure_adminbot_project(
     Ok(row.get("id"))
 }
 
+/// Update an existing Project's installable fields (name, url, OAuth
+/// registration) — the update half of an install upsert, so re-installing a
+/// manifest for an existing slug refreshes it (docs/25) rather than being a
+/// no-op. Leaves `slug` and `signing_public_key` untouched.
+pub async fn update_registration(
+    conn: &mut PgConnection,
+    project_id: i64,
+    name: &str,
+    url: Option<&str>,
+    oauth_client_id: Option<&str>,
+    oauth_redirect_uris: &[String],
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE projects
+         SET name = $2, url = $3, oauth_client_id = $4, oauth_redirect_uris = $5
+         WHERE id = $1",
+    )
+    .bind(project_id)
+    .bind(name)
+    .bind(url)
+    .bind(oauth_client_id)
+    .bind(oauth_redirect_uris)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 pub async fn find_by_slug(
     conn: &mut PgConnection,
     slug: &str,

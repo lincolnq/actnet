@@ -1330,35 +1330,6 @@ async fn project_oauth_registration_roundtrips_and_is_unique() {
     assert!(dup.is_err(), "duplicate oauth_client_id must error");
 }
 
-#[tokio::test]
-async fn directory_seed_preserves_official_no_client_id() {
-    use server::db::directory::{self, SeedEntry};
-    let pool = test_pool().await;
-    let mut tx = begin_tx(&pool).await;
-
-    directory::seed(
-        &mut *tx,
-        &[SeedEntry {
-            name: "Testbot".into(),
-            url: "https://dbdir-seed.test/".into(),
-            description: "demo".into(),
-            official: true,
-        }],
-    )
-    .await
-    .unwrap();
-
-    let seeded = directory::list(&mut *tx)
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|d| d.url == "https://dbdir-seed.test/")
-        .expect("seeded entry present");
-    assert!(seeded.official, "seed preserves operator-set official flag");
-    // Seeded rows are unowned (project_id NULL): OAuth client ids are no longer
-    // configured via env, so an inherited client_id is absent (docs/25).
-    assert!(seeded.client_id.is_none());
-}
 
 #[tokio::test]
 async fn token_redemption_is_single_use() {
