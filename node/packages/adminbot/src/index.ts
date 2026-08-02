@@ -26,7 +26,7 @@
 //     bookkeeping (group id, already-invited initial admins).
 
 import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   AppCore,
@@ -88,9 +88,12 @@ interface Env {
   sharedSecret?: string;
   /// Directory of Project manifests (`*.json`) to install non-interactively at
   /// startup (docs/22, docs/25). The deploy bundle writes one per installed web
-  /// Project so retiring the `PROJECTS` env still auto-configures them (directory
-  /// entry + OAuth login). Unset → feature off (e.g. dev, which seeds directly).
-  manifestDir?: string;
+  /// Project so a Project's directory entry + OAuth login are configured without a
+  /// manual `/install-project`. Defaults to a `manifests` dir alongside the state
+  /// dir (on prod: `$SHARED/manifests`, since state is `$SHARED/adminbot-state`),
+  /// so the deploy needs no explicit env and existing hosts pick it up on upgrade.
+  /// The dir is only consulted if it exists, so dev (no such dir) is a no-op.
+  manifestDir: string;
   /// Path to the deployment's VERSION file (= the current release tag). The
   /// deploy bundle writes `/opt/avalanche/deployments/current/VERSION`; override
   /// for separate-host / dev runs. Missing/unreadable → version checks no-op.
@@ -119,7 +122,9 @@ function readEnv(): Env {
     // Bootstrap secret for closed-registration servers (docs/24). Required to
     // register against a closed server; unset/ignored on an open one.
     sharedSecret: process.env.REGISTRATION_SHARED_SECRET || undefined,
-    manifestDir: process.env.ADMINBOT_MANIFEST_DIR || undefined,
+    // Default: a `manifests` dir alongside the state dir (`$SHARED/manifests` on
+    // prod). Only used if it exists (see autoInstallManifests), so dev is a no-op.
+    manifestDir: process.env.ADMINBOT_MANIFEST_DIR || join(dirname(stateDir), "manifests"),
     versionFile: process.env.AVALANCHE_VERSION_FILE ?? "/opt/avalanche/deployments/current/VERSION",
   };
 }

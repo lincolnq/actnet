@@ -161,7 +161,12 @@ project_oauth_client() {
 # on-disk component set each run (a removed Project's manifest disappears); needs
 # SERVER_URL in scope. No-op if SERVER_URL is unset.
 write_project_manifests() {
+  # SERVER_URL is in scope during install (from bootstrap.env) but not during
+  # update.sh — fall back to avalanche.env there (as regenerate_project_routes does).
   local server_url="${SERVER_URL:-}"
+  if [ -z "$server_url" ] && [ -f "$ETC/avalanche.env" ]; then
+    server_url="$(grep '^SERVER_URL=' "$ETC/avalanche.env" | cut -d= -f2-)"
+  fi
   [ -n "$server_url" ] || return 0
   server_url="${server_url%/}"
   install -d -o avalanche -g avalanche -m 750 "$MANIFESTS"
