@@ -41,52 +41,33 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/oauth/token", post(token))
 }
 
-// ── OAuth client registry (parsed from the PROJECTS config) ─────────────────
-
-/// A Project's OAuth-client registration, embedded in its `PROJECTS` entry.
-/// Login fields are optional — a Project that does not do login omits them.
-#[derive(Debug, Deserialize)]
-struct ClientEntry {
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    url: Option<String>,
-    #[serde(default)]
-    client_id: Option<String>,
-    #[serde(default)]
-    redirect_uris: Vec<String>,
-    #[serde(default)]
-    official: bool,
-}
+// ── OAuth client registry (the `projects` table) ────────────────────────────
 
 struct ResolvedClient {
     project_url: String,
     redirect_uris: Vec<String>,
-    #[allow(dead_code)]
-    name: Option<String>,
-    #[allow(dead_code)]
-    official: bool,
 }
 
-/// Find a registered OAuth client by `client_id` in the `PROJECTS` config.
-/// A registered client must carry both a `client_id` and a `url` (the token
-/// audience); entries missing either are not valid login clients.
-fn find_client(projects_json: &str, client_id: &str) -> Option<ResolvedClient> {
-    let entries: Vec<ClientEntry> = serde_json::from_str(projects_json).ok()?;
-    entries.into_iter().find_map(|e| {
-        let cid = e.client_id?;
-        let url = e.url?;
-        if cid == client_id {
-            Some(ResolvedClient {
-                project_url: url,
-                redirect_uris: e.redirect_uris,
-                name: e.name,
-                official: e.official,
-            })
-        } else {
-            None
-        }
-    })
+/// Resolve a registered OAuth login client by `client_id` against the `projects`
+/// table (docs/25). A valid login client is a Project that carries both an
+/// `oauth_client_id` and a `url` (the token audience); a Project missing the url
+/// is not a usable login client. OAuth clients are no longer configured via the
+/// `PROJECTS` env var — a login-capable Project declares its client id/redirect
+/// uris in its install manifest, which lands on the `projects` row.
+async fn find_client(
+    conn: &mut sqlx::PgConnection,
+    client_id: &str,
+) -> Result<Option<ResolvedClient>, sqlx::Error> {
+    let Some(project) = db::projects::find_by_oauth_client_id(conn, client_id).await? else {
+        return Ok(None);
+    };
+    let Some(project_url) = project.url else {
+        return Ok(None);
+    };
+    Ok(Some(ResolvedClient {
+        project_url,
+        redirect_uris: project.oauth_redirect_uris,
+    }))
 }
 
 // ── PKCE (RFC 7636) ─────────────────────────────────────────────────────────
@@ -226,7 +207,9 @@ async fn authorize_code(
         ));
     }
 
-    let client = find_client(&state.config.projects_json, &req.client_id)
+    let mut conn = state.db.acquire().await?;
+    let client = find_client(&mut conn, &req.client_id)
+        .await?
         .ok_or_else(|| ServerError::BadRequest("unknown client_id".into()))?;
     if !client.redirect_uris.iter().any(|u| u == &req.redirect_uri) {
         return Err(ServerError::BadRequest(
@@ -234,7 +217,6 @@ async fn authorize_code(
         ));
     }
 
-    let mut conn = state.db.acquire().await?;
     let device = db::devices::find_by_pk(&mut conn, auth.device_pk)
         .await?
         .ok_or(ServerError::Internal("authenticated device not found".into()))?;
@@ -297,7 +279,8 @@ async fn device_authorization(
         return Err(OAuthError::InvalidRequest);
     }
 
-    let client = find_client(&state.config.projects_json, &req.client_id)
+    let client = find_client(&mut conn, &req.client_id)
+        .await?
         .ok_or(OAuthError::InvalidClient)?;
 
     let device_code = random_token();
@@ -603,18 +586,9 @@ mod tests {
         assert!(c.chars().all(|ch| ch == '-' || "BCDFGHJKMNPQRSTVWXZ23456789".contains(ch)));
     }
 
-    #[test]
-    fn find_client_requires_client_id_and_url() {
-        let json = r#"[
-            {"name":"NoLogin","url":"https://a.test","description":"x"},
-            {"name":"Login","url":"https://b.test","client_id":"cid-b","redirect_uris":["https://b.test/cb"],"official":true}
-        ]"#;
-        assert!(find_client(json, "cid-a").is_none());
-        let c = find_client(json, "cid-b").expect("client b");
-        assert_eq!(c.project_url, "https://b.test");
-        assert_eq!(c.redirect_uris, vec!["https://b.test/cb".to_string()]);
-        assert!(c.official);
-    }
+    // `find_client` is now a DB lookup (resolves an `oauth_client_id` against the
+    // `projects` table, requiring a non-null `url`); it is covered by the
+    // server integration tests (http_tests.rs) rather than a unit test here.
 
     #[test]
     fn urlencode_escapes_reserved() {

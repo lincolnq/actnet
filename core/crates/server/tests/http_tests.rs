@@ -1287,6 +1287,117 @@ async fn directory_put_surfaces_in_get_projects() {
 }
 
 #[tokio::test]
+async fn oauth_client_registration_lives_on_the_project() {
+    let _guard = GATEKEEPER_LOCK.lock().await;
+    let (app, _admin_did, admin_token) =
+        setup_adminbot(server::config::RegistrationMode::Open).await;
+
+    let slug = format!("oauth{}", unique_id());
+    let base = format!("https://{slug}.test");
+    let client_id = format!("cid-{slug}");
+    let redirect_uri = format!("{base}/cb");
+
+    // Install a login-capable Project: client_id + redirect_uris land on the row.
+    let (status, _) = admin_req(
+        &app,
+        "POST",
+        "/v1/admin/projects",
+        &admin_token,
+        Some(serde_json::json!({
+            "slug": slug, "name": "OAuth Demo", "url": base,
+            "client_id": client_id, "redirect_uris": [redirect_uri],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // A directory entry inherits the Project's client_id via the join in
+    // `GET /v1/projects` (the value is not copied onto the directory row).
+    let page = format!("{base}/");
+    let (status, _) = admin_req(
+        &app,
+        "PUT",
+        &format!("/v1/admin/projects/{slug}/directory"),
+        &admin_token,
+        Some(serde_json::json!({ "entries": [ { "name": "Home", "url": page } ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = admin_req(&app, "GET", "/v1/projects", "", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let entry = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["url"] == serde_json::Value::String(page.clone()))
+        .expect("entry present");
+    assert_eq!(entry["client_id"], serde_json::Value::String(client_id.clone()));
+
+    // A user session drives the same-device authorize-code endpoint, which
+    // resolves client_id against the projects table (no PROJECTS-env fallback)
+    // and enforces the redirect allowlist.
+    let (_did, session) = register_and_get_token(&app).await;
+    let challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+    let (status, body) = admin_req(
+        &app,
+        "POST",
+        "/v1/oauth/authorize-code",
+        &session,
+        Some(serde_json::json!({
+            "client_id": client_id, "redirect_uri": redirect_uri,
+            "code_challenge": challenge, "code_challenge_method": "S256",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "registered client + redirect mints a code");
+    assert!(body["code"].as_str().is_some());
+
+    // Unregistered redirect_uri → rejected (no open redirect).
+    let (status, _) = admin_req(
+        &app,
+        "POST",
+        "/v1/oauth/authorize-code",
+        &session,
+        Some(serde_json::json!({
+            "client_id": client_id, "redirect_uri": format!("{base}/evil"),
+            "code_challenge": challenge, "code_challenge_method": "S256",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unregistered redirect_uri rejected");
+
+    // Unknown client_id → rejected (env no longer configures OAuth clients).
+    let (status, _) = admin_req(
+        &app,
+        "POST",
+        "/v1/oauth/authorize-code",
+        &session,
+        Some(serde_json::json!({
+            "client_id": "nonexistent", "redirect_uri": redirect_uri,
+            "code_challenge": challenge, "code_challenge_method": "S256",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "unknown client_id rejected");
+
+    // A second Project cannot claim the same client_id.
+    let slug2 = format!("oauth{}", unique_id());
+    let (status, _) = admin_req(
+        &app,
+        "POST",
+        "/v1/admin/projects",
+        &admin_token,
+        Some(serde_json::json!({
+            "slug": slug2, "name": "Dup", "url": format!("https://{slug2}.test"),
+            "client_id": client_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "duplicate client_id rejected");
+}
+
+#[tokio::test]
 async fn directory_put_requires_superuser() {
     let _guard = GATEKEEPER_LOCK.lock().await;
     let (app, _admin_did, _admin_token) =
@@ -1880,13 +1991,21 @@ async fn link_device_bad_signature_returns_401() {
 
 /// A test AppState with one registered OAuth login client and (by default) a
 /// zero poll-interval so device-grant happy-path tests don't hit `slow_down`.
+/// OAuth clients live on the `projects` row now (docs/25), so the client is
+/// seeded into the DB (idempotently — the shared dev DB persists across runs).
 async fn oauth_test_state() -> AppState {
     let mut state = test_state().await;
-    state.config.projects_json = r#"[
-        {"name":"Proj","url":"https://proj.test","description":"p",
-         "client_id":"cid-test","redirect_uris":["https://proj.test/cb"],"official":true}
-    ]"#
-    .to_string();
+    let mut conn = state.db.acquire().await.unwrap();
+    sqlx::query(
+        "INSERT INTO projects (slug, name, url, oauth_client_id, oauth_redirect_uris)
+         VALUES ('cid-test-proj', 'Proj', 'https://proj.test', 'cid-test',
+                 ARRAY['https://proj.test/cb'])
+         ON CONFLICT DO NOTHING",
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
     state.config.oauth_device_poll_interval_secs = 0;
     state
 }

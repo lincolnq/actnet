@@ -108,9 +108,11 @@ async fn main() {
 
     // One-time migration of the legacy PROJECTS env directory into the DB
     // (docs/22): the client directory is now DB-backed. Seeds only when the
-    // table is empty, preserving each entry's operator-set official flag +
-    // OAuth client id. Once seeded, later PROJECTS edits are ignored — the
-    // directory is DB-owned and managed via adminbot from here on.
+    // table is empty, preserving each entry's operator-set official flag. Once
+    // seeded, later PROJECTS edits are ignored — the directory is DB-owned and
+    // managed via adminbot from here on. OAuth login clients are NOT seeded from
+    // env (docs/25): a login-capable Project declares its client id/redirect
+    // uris in its install manifest, which lands on the `projects` row.
     {
         #[derive(serde::Deserialize)]
         struct SeedProject {
@@ -118,8 +120,6 @@ async fn main() {
             url: String,
             #[serde(default)]
             description: String,
-            #[serde(default)]
-            client_id: Option<String>,
             #[serde(default)]
             official: bool,
         }
@@ -136,7 +136,6 @@ async fn main() {
                             name: p.name,
                             url: p.url,
                             description: p.description,
-                            client_id: p.client_id,
                             official: p.official,
                         })
                         .collect();

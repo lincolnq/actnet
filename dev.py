@@ -42,6 +42,7 @@ def project_host():
 PROJECTS = [
     {
         "name": "Testbot",
+        "slug": "testbot",
         "description": "Chat with an AI bot",
         "dist": "packages/testbot/dist/index.js",
         "bind_env": "TESTBOT_BIND_ADDR",
@@ -50,6 +51,12 @@ PROJECTS = [
         # Avalanche" demo at <url>/login works. The redirect_uri is derived from
         # the phone-reachable project url below; public_url_env tells the service
         # that same url so its redirect_uri matches byte-for-byte.
+        #
+        # OAuth registration lives on the `projects` DB row now (not the PROJECTS
+        # env var). In prod an operator installs a login-capable Project via
+        # adminbot's manifest; dev has no superuser token to call that admin API,
+        # so `seed_project_row` writes the row + directory entry directly (the
+        # dev-only equivalent). See docs/25.
         "oauth_client_id": "testbot",
         "public_url_env": "TESTBOT_PUBLIC_URL",
     },
@@ -94,6 +101,40 @@ def wait_for_postgres():
         if "healthy" in result.stdout:
             break
         time.sleep(1)
+
+
+def seed_project_row(slug, name, description, url, client_id, redirect_uri):
+    """Dev-only: install a login-capable Project directly in the DB.
+
+    OAuth "Sign in with Avalanche" registration lives on the `projects` row
+    (docs/25). In prod an operator installs the Project via adminbot's manifest;
+    dev has no superuser token for that admin API, so we write the `projects`
+    row (client_id + redirect allowlist) and its Network-tab `directory_entries`
+    row directly — the dev equivalent of a manifest install. Idempotent so
+    `make dev-all` re-runs cleanly; the directory entry inherits `client_id` from
+    the Project via the join in `GET /v1/projects`.
+    """
+    print(f"  Seeding Project '{slug}' (OAuth client '{client_id}') -> {url}")
+    sql = f"""
+    INSERT INTO projects (slug, name, url, oauth_client_id, oauth_redirect_uris)
+    VALUES ('{slug}', '{name}', '{url}', '{client_id}', ARRAY['{redirect_uri}'])
+    ON CONFLICT (slug) DO UPDATE SET
+        name = EXCLUDED.name,
+        url = EXCLUDED.url,
+        oauth_client_id = EXCLUDED.oauth_client_id,
+        oauth_redirect_uris = EXCLUDED.oauth_redirect_uris;
+    DELETE FROM directory_entries
+        WHERE project_id = (SELECT id FROM projects WHERE slug = '{slug}');
+    INSERT INTO directory_entries (project_id, name, url, description, position)
+        SELECT id, '{name}', '{url}', '{description}', 0
+        FROM projects WHERE slug = '{slug}';
+    """
+    subprocess.run(
+        ["docker", "compose", "-f", INFRA_COMPOSE, "exec", "-T", "postgres",
+         "psql", "-U", "actnet", "-d", "actnet", "-v", "ON_ERROR_STOP=1", "-c", sql],
+        env={**os.environ, "PGPASSWORD": "actnet-dev"},
+        check=True,
+    )
 
 
 def run_migrations():
@@ -302,18 +343,27 @@ def main():
         port = next_port
         next_port += 1
         url = f"{scheme}://{host}:{port}"
-        entry = {
-            "name": project["name"],
-            "url": url,
-            "description": project["description"],
-        }
-        # OAuth login client (docs/25): register client_id + the /login
-        # redirect_uri (phone-reachable) so "Sign in with Avalanche" works.
         if project.get("oauth_client_id"):
-            entry["client_id"] = project["oauth_client_id"]
-            entry["redirect_uris"] = [f"{url}/login"]
-            entry["official"] = True
-        projects_json.append(entry)
+            # Login-capable Project: OAuth registration lives on the `projects`
+            # row (docs/25), seeded directly in dev (no admin token here). This
+            # also creates its Network-tab directory entry, so it is NOT added to
+            # the legacy PROJECTS env directory seed (that would double-list it).
+            seed_project_row(
+                slug=project["slug"],
+                name=project["name"],
+                description=project["description"],
+                url=url,
+                client_id=project["oauth_client_id"],
+                redirect_uri=f"{url}/login",
+            )
+        else:
+            # Plain directory entry (no login): seed via the legacy PROJECTS env
+            # var, which the server migrates into the DB directory on first boot.
+            projects_json.append({
+                "name": project["name"],
+                "url": url,
+                "description": project["description"],
+            })
         project_launches.append((project, port))
 
     # Free any port left bound by an orphaned service from a previous dev run

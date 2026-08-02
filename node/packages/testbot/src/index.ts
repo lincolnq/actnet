@@ -944,28 +944,34 @@ function main(): void {
 
   server.listen(env.bindPort, env.bindHost, () => {
     console.log(`testbot: listening on ${env.bindHost}:${env.bindPort} (homeserver ${env.homeserverUrl})`);
-    // OAuth login demo (docs/25): print the exact PROJECTS entry to register on
-    // the homeserver so this service is a recognized OAuth client. The
-    // redirect_uri must match byte-for-byte what the phone browser will visit.
+    // OAuth login demo (docs/25): print the install manifest to register this
+    // service as a recognized login client. OAuth registration lives on the
+    // `projects` row now (not the PROJECTS env) — an operator installs this
+    // manifest via adminbot's `/install-project`. The redirectUris must match
+    // byte-for-byte what the phone browser will visit.
     const redirectUri = loginRedirectUri(env);
-    const projectEntry = {
+    const manifest = {
+      slug: "testbot",
       name: "Testbot",
-      url: env.publicUrl,
       description: "Chat with an AI bot",
-      client_id: env.oauthClientId,
-      redirect_uris: [redirectUri],
-      official: true,
+      url: env.publicUrl,
+      permissions: [],
+      webEntries: [
+        { name: "Testbot", url: env.publicUrl, description: "Chat with an AI bot" },
+      ],
+      clientId: env.oauthClientId,
+      redirectUris: [redirectUri],
     };
     console.log(`testbot: OAuth login demo page → ${env.publicUrl}${env.basePath}login`);
     console.log(
-      `testbot: register this OAuth client on the homeserver (PROJECTS env):\n` +
-        `  PROJECTS='${JSON.stringify([projectEntry])}'`,
+      `testbot: install this manifest via adminbot's /install-project:\n` +
+        `  ${JSON.stringify(manifest)}`,
     );
     if (env.publicUrl.includes("localhost")) {
       console.warn(
         "testbot: TESTBOT_PUBLIC_URL is localhost — set it to this machine's " +
           "LAN URL (e.g. http://192.168.x.x:3001) so your phone can reach the " +
-          "demo, and re-register the PROJECTS redirect_uri to match.",
+          "demo, and re-install the manifest so its redirectUris match.",
       );
     }
   });

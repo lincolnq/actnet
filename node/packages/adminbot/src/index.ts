@@ -628,6 +628,12 @@ interface ManifestWebEntry {
 const MAX_WEB_ENTRIES = 10;
 const MAX_WEB_ENTRY_NAME = 100;
 const MAX_WEB_ENTRY_DESC = 280;
+// OAuth "Sign in with Avalanche" client-registration caps (docs/25); kept in
+// sync with MAX_CLIENT_ID_LEN / MAX_REDIRECT_URIS / MAX_REDIRECT_URI_LEN in
+// server routes/admin.rs.
+const MAX_CLIENT_ID_LEN = 128;
+const MAX_REDIRECT_URIS = 5;
+const MAX_REDIRECT_URI_LEN = 512;
 
 // A project's self-description. Mirrors the future well-known-URL manifest.
 interface ProjectManifest {
@@ -639,6 +645,14 @@ interface ProjectManifest {
   // Web pages to publish in the client "Network" tab (docs/22). Always shown to
   // the admin for review at install; stored non-official server-side.
   webEntries: ManifestWebEntry[];
+  // OAuth "Sign in with Avalanche" registration (docs/25), if the project offers
+  // login. `clientId` is the stable public identifier (unique across projects);
+  // `redirectUris` is the exact-match allowlist for the same-device flow. Both
+  // land on the project row server-side. Self-declared (they only ever constrain
+  // this project's own login), so no separate admin approval — shown for
+  // legibility. `official` is never self-declared and stays operator-only.
+  clientId?: string;
+  redirectUris: string[];
 }
 
 type InstallStep = "manifest" | "confirm";
@@ -740,6 +754,7 @@ async function loadManifest(input: string): Promise<ProjectManifest> {
   } else if (m.permissions !== undefined) {
     throw new Error('"permissions" must be a list of text values.');
   }
+  const { clientId, redirectUris } = parseOauth(m.clientId, m.redirectUris);
   return {
     slug: m.slug,
     name: m.name,
@@ -747,7 +762,52 @@ async function loadManifest(input: string): Promise<ProjectManifest> {
     url,
     permissions,
     webEntries: parseWebEntries(m.webEntries),
+    clientId,
+    redirectUris,
   };
+}
+
+// Validate + normalize a manifest's optional OAuth registration (docs/25).
+// Untrusted input, re-validated on the server (routes/admin.rs). `redirectUris`
+// are only meaningful with a `clientId`; throws a plain-language Error otherwise.
+function parseOauth(
+  rawClientId: unknown,
+  rawRedirectUris: unknown,
+): { clientId?: string; redirectUris: string[] } {
+  const clientId =
+    typeof rawClientId === "string" && rawClientId.trim().length > 0
+      ? rawClientId.trim()
+      : undefined;
+  let redirectUris: string[] = [];
+  if (rawRedirectUris !== undefined && rawRedirectUris !== null) {
+    if (
+      !Array.isArray(rawRedirectUris) ||
+      !rawRedirectUris.every((u): u is string => typeof u === "string")
+    ) {
+      throw new Error('"redirectUris" must be a list of URLs.');
+    }
+    redirectUris = rawRedirectUris.map((u) => u.trim());
+  }
+  if (clientId === undefined) {
+    if (redirectUris.length > 0) {
+      throw new Error('"redirectUris" need a "clientId".');
+    }
+    return { clientId: undefined, redirectUris: [] };
+  }
+  // eslint-disable-next-line no-control-regex
+  const hasControl = (s: string): boolean => /[\x00-\x1f\x7f]/.test(s);
+  if (clientId.length > MAX_CLIENT_ID_LEN || /[^\x21-\x7e]/.test(clientId)) {
+    throw new Error(`"clientId" must be 1–${MAX_CLIENT_ID_LEN} non-space ASCII characters.`);
+  }
+  if (redirectUris.length > MAX_REDIRECT_URIS) {
+    throw new Error(`a manifest may list at most ${MAX_REDIRECT_URIS} redirectUris.`);
+  }
+  for (const u of redirectUris) {
+    if (u.length > MAX_REDIRECT_URI_LEN || !/^https?:\/\//.test(u) || hasControl(u)) {
+      throw new Error('each "redirectUri" must be an http(s) URL with no control characters.');
+    }
+  }
+  return { clientId, redirectUris };
 }
 
 // Validate + normalize a manifest's optional `webEntries` (the Network-tab
@@ -796,6 +856,13 @@ function confirmPrompt(m: ProjectManifest): string {
   if (m.webEntries.length > 0) {
     lines.push("", "It will add these pages to the Network tab:");
     m.webEntries.forEach((e) => lines.push(`  • ${e.name} — ${e.url}`));
+  }
+  if (m.clientId) {
+    lines.push("", `It offers "Sign in with Avalanche" (login id ${m.clientId}).`);
+    if (m.redirectUris.length > 0) {
+      lines.push("Sign-in returns to:");
+      m.redirectUris.forEach((u) => lines.push(`  • ${u}`));
+    }
   }
   if (m.permissions.length === 0) {
     lines.push("", "It isn't requesting any special permissions.", "", "Reply `yes` to install, or /cancel.");
@@ -909,13 +976,22 @@ async function performInstall(
   manifest: ProjectManifest,
   grant: string[],
 ): Promise<{ ok: boolean; lines: string[] }> {
-  const { slug, name, url } = manifest;
+  const { slug, name, url, clientId, redirectUris } = manifest;
   const lines: string[] = [];
   try {
     await core.adminRequest(
       "POST",
       "/v1/admin/projects",
-      JSON.stringify({ slug, name, url: url ?? null, bot_dids: [] }),
+      JSON.stringify({
+        slug,
+        name,
+        url: url ?? null,
+        bot_dids: [],
+        // OAuth login registration lands on the project row (docs/25); omitted
+        // fields default to "no login client" server-side.
+        client_id: clientId ?? null,
+        redirect_uris: redirectUris,
+      }),
     );
     lines.push(`Installed "${name}" (codename ${slug}).`);
   } catch (e) {

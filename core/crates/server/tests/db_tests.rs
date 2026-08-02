@@ -1085,7 +1085,7 @@ async fn project_create_find_delete() {
     let pool = test_pool().await;
     let mut tx = begin_tx(&pool).await;
 
-    let id = projects::create(&mut *tx, "proj-cfd", "Project", Some("https://x.test")).await.unwrap();
+    let id = projects::create(&mut *tx, "proj-cfd", "Project", Some("https://x.test"), None, &[]).await.unwrap();
     let found = projects::find_by_slug(&mut *tx, "proj-cfd").await.unwrap().unwrap();
     assert_eq!(found.id, id);
     assert_eq!(found.name, "Project");
@@ -1112,8 +1112,8 @@ async fn project_bots_one_to_many_and_resolution() {
     let pool = test_pool().await;
     let mut tx = begin_tx(&pool).await;
 
-    let p1 = projects::create(&mut *tx, "proj-otm-1", "P1", None).await.unwrap();
-    let p2 = projects::create(&mut *tx, "proj-otm-2", "P2", None).await.unwrap();
+    let p1 = projects::create(&mut *tx, "proj-otm-1", "P1", None, None, &[]).await.unwrap();
+    let p2 = projects::create(&mut *tx, "proj-otm-2", "P2", None, None, &[]).await.unwrap();
     let bot_a = server::db::accounts::create(&mut *tx, "did:local:botm1", None, true).await.unwrap();
     let bot_b = server::db::accounts::create(&mut *tx, "did:local:botm2", None, true).await.unwrap();
 
@@ -1144,7 +1144,7 @@ async fn capabilities_grant_check_revoke() {
     let pool = test_pool().await;
     let mut tx = begin_tx(&pool).await;
 
-    let p = projects::create(&mut *tx, "proj-cap", "P", None).await.unwrap();
+    let p = projects::create(&mut *tx, "proj-cap", "P", None, None, &[]).await.unwrap();
     let bot = server::db::accounts::create(&mut *tx, "did:local:capbot1", None, true).await.unwrap();
     projects::link_bot(&mut *tx, p, bot).await.unwrap();
 
@@ -1186,7 +1186,7 @@ async fn gatekeeper_signing_key_set_and_clear() {
     let pool = test_pool().await;
     let mut tx = begin_tx(&pool).await;
 
-    let p = projects::create(&mut *tx, "proj-gk", "GK", None).await.unwrap();
+    let p = projects::create(&mut *tx, "proj-gk", "GK", None, None, &[]).await.unwrap();
     projects::set_signing_key(&mut *tx, p, Some(&[7u8; 32])).await.unwrap();
     let found = projects::find_by_slug(&mut *tx, "proj-gk").await.unwrap().unwrap();
     assert_eq!(found.signing_public_key.as_deref(), Some(&[7u8; 32][..]));
@@ -1201,7 +1201,7 @@ async fn directory_replace_is_full_replace_and_ordered() {
     let pool = test_pool().await;
     let mut tx = begin_tx(&pool).await;
 
-    let pid = projects::create(&mut *tx, "proj-dir-r", "Dir", None).await.unwrap();
+    let pid = projects::create(&mut *tx, "proj-dir-r", "Dir", None, None, &[]).await.unwrap();
     let e = |n: &str, u: &str| ProjectEntry {
         name: n.into(),
         url: u.into(),
@@ -1248,7 +1248,7 @@ async fn directory_entries_cascade_on_project_delete() {
     let pool = test_pool().await;
     let mut tx = begin_tx(&pool).await;
 
-    let pid = projects::create(&mut *tx, "proj-dir-cascade", "Dir", None).await.unwrap();
+    let pid = projects::create(&mut *tx, "proj-dir-cascade", "Dir", None, None, &[]).await.unwrap();
     directory::replace_for_project(
         &mut *tx,
         pid,
@@ -1271,7 +1271,67 @@ async fn directory_entries_cascade_on_project_delete() {
 }
 
 #[tokio::test]
-async fn directory_seed_preserves_official_and_client_id() {
+async fn project_oauth_registration_roundtrips_and_is_unique() {
+    use server::db::projects;
+    let pool = test_pool().await;
+    let mut tx = begin_tx(&pool).await;
+
+    let redirects = vec![
+        "https://o.test/cb".to_string(),
+        "https://o.test/cb2".to_string(),
+    ];
+    let id = projects::create(
+        &mut *tx,
+        "proj-oauth",
+        "OAuth",
+        Some("https://o.test"),
+        Some("cid-oauth"),
+        &redirects,
+    )
+    .await
+    .unwrap();
+
+    // Resolvable by client_id, carrying audience url + redirect allowlist.
+    let p = projects::find_by_oauth_client_id(&mut *tx, "cid-oauth")
+        .await
+        .unwrap()
+        .expect("resolved by client_id");
+    assert_eq!(p.id, id);
+    assert_eq!(p.url.as_deref(), Some("https://o.test"));
+    assert_eq!(p.oauth_redirect_uris, redirects);
+
+    // find_by_slug round-trips the same fields.
+    let by_slug = projects::find_by_slug(&mut *tx, "proj-oauth")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_slug.oauth_client_id.as_deref(), Some("cid-oauth"));
+
+    // Unknown client id resolves to None.
+    assert!(projects::find_by_oauth_client_id(&mut *tx, "nope")
+        .await
+        .unwrap()
+        .is_none());
+
+    // A Project with no login registration has empty OAuth fields.
+    projects::create(&mut *tx, "proj-nologin", "NoLogin", None, None, &[])
+        .await
+        .unwrap();
+    let n = projects::find_by_slug(&mut *tx, "proj-nologin")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(n.oauth_client_id.is_none());
+    assert!(n.oauth_redirect_uris.is_empty());
+
+    // Duplicate client_id violates the UNIQUE constraint (last op — leaves the
+    // tx aborted, which begin_tx rolls back).
+    let dup = projects::create(&mut *tx, "proj-dup", "Dup", None, Some("cid-oauth"), &[]).await;
+    assert!(dup.is_err(), "duplicate oauth_client_id must error");
+}
+
+#[tokio::test]
+async fn directory_seed_preserves_official_no_client_id() {
     use server::db::directory::{self, SeedEntry};
     let pool = test_pool().await;
     let mut tx = begin_tx(&pool).await;
@@ -1282,7 +1342,6 @@ async fn directory_seed_preserves_official_and_client_id() {
             name: "Testbot".into(),
             url: "https://dbdir-seed.test/".into(),
             description: "demo".into(),
-            client_id: Some("testbot".into()),
             official: true,
         }],
     )
@@ -1296,7 +1355,9 @@ async fn directory_seed_preserves_official_and_client_id() {
         .find(|d| d.url == "https://dbdir-seed.test/")
         .expect("seeded entry present");
     assert!(seeded.official, "seed preserves operator-set official flag");
-    assert_eq!(seeded.client_id.as_deref(), Some("testbot"));
+    // Seeded rows are unowned (project_id NULL): OAuth client ids are no longer
+    // configured via env, so an inherited client_id is absent (docs/25).
+    assert!(seeded.client_id.is_none());
 }
 
 #[tokio::test]
@@ -1343,7 +1404,7 @@ async fn delete_account_unlinks_from_project() {
     let pool = test_pool().await;
     let mut tx = begin_tx(&pool).await;
 
-    let p = projects::create(&mut *tx, "proj-del", "P", None).await.unwrap();
+    let p = projects::create(&mut *tx, "proj-del", "P", None, None, &[]).await.unwrap();
     let bot = server::db::accounts::create(&mut *tx, "did:local:delbot1", None, true).await.unwrap();
     projects::link_bot(&mut *tx, p, bot).await.unwrap();
 

@@ -508,13 +508,20 @@ E2E); push real interactivity into an explicit full-screen webview.
   server-verified credentials (would leak admin roster, eroding the property `#admins` protects).
 - **Client directory / Network tab (✅ DB-backed, `22`):** `GET /v1/projects` reads a `directory_entries`
   table (nullable `project_id` FK → `projects`, `ON DELETE CASCADE`), not the legacy `PROJECTS` env — which
-  is now only a **one-time startup seed** (empty-table guard; preserves seeded rows' operator-set `official`/
-  `client_id`). A manifest's `webEntries` publish per-Project entries via `PUT /v1/admin/projects/{slug}/
+  is now only a **one-time startup seed** (empty-table guard; preserves seeded rows' operator-set `official`
+  only). A manifest's `webEntries` publish per-Project entries via `PUT /v1/admin/projects/{slug}/
   directory` (replace-semantics), reviewed by the admin at install, stored **always non-official** (officialness
-  is never self-declared) with no OAuth `client_id`. Untrusted-input capped (≤10 entries, http(s)-only, length-
+  is never self-declared). Untrusted-input capped (≤10 entries, http(s)-only, length-
   limited, control-chars rejected). Wire `ProjectInfo` shape unchanged → no client changes. Testbot keeps its
-  entry transitively via the seed. **Deferred:** deploy-CLI reconciliation (retire `PROJECTS`-env generation);
-  OAuth for manifest-declared entries. This is the resolution of the old "two projects concepts" reconcile TODO.
+  entry transitively via the seed. **Deferred:** deploy-CLI reconciliation (retire `PROJECTS`-env generation).
+  This is the resolution of the old "two projects concepts" reconcile TODO.
+- **OAuth client registration on the Project (✅ `25`):** a login-capable Project's `oauth_client_id` (UNIQUE)
+  + `oauth_redirect_uris` live on the `projects` row (audience = the Project's `url`), declared in its install
+  manifest (`clientId`/`redirectUris`) and set at `POST /v1/admin/projects`. `find_client` resolves login
+  requests against this row — **OAuth is no longer configured via the `PROJECTS` env** (env-seeded OAuth clients
+  removed; the old `directory_entries.client_id` column dropped, its value now inherited from the Project via a
+  join for `GET /v1/projects`). `clientId`/`redirectUris` are self-declared/self-constraining (no separate admin
+  gesture; duplicate `client_id` fails install); `official` stays operator-only.
 - **Vetted onboarding / gatekeeper** (📐, `24`) — gates account creation behind human vetting. Shaped oddly
   because the applicant has **no DID until the end**: front half runs out-of-band (email/SMS invite). Needs
   **closed registration** (`POST /v1/accounts` refused without a token validating against an installed

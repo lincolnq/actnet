@@ -148,14 +148,28 @@ Consequences, stated so Projects design correctly:
 
 ## Client registration
 
-A Project registers as an OAuth client at **admin-install time** by extending its
-entry in the `PROJECTS` config (see `10`/`config.rs`). Fields added, all optional
-(a Project that does not do login omits them and is unaffected):
+A Project registers as an OAuth client at **admin-install time** by declaring the
+fields below in its **install manifest** (docs/20, docs/22). They land on the
+Project's `projects` row (`oauth_client_id`, `oauth_redirect_uris`; audience =
+the Project's existing `url`) and `find_client` resolves an incoming login
+request against that row. OAuth clients are **not** configured via the `PROJECTS`
+env var — a Project *is* the registry.
 
-- `client_id` — stable public identifier used in authorize/token/device requests.
-- `redirect_uris` — exact-match allowlist for front-end A's `redirect_uri`
-  (no open redirect; a `redirect_uri` not on the list is rejected).
-- `official` — the verified-badge bit (`54`), shown on the consent screen.
+- `clientId` — stable public identifier used in authorize/token/device requests.
+  **Unique across Projects** (a manifest cannot claim another Project's client id
+  to hijack its login resolution); a duplicate fails the install. By convention
+  it is the Project's **domain** (e.g. `beagle.example.org`) — a namespace the
+  Project already controls, so collisions are self-avoiding — but this is a
+  recommendation, not a validation rule (any unique string is accepted).
+- `redirectUris` — exact-match allowlist for front-end A's `redirect_uri`
+  (no open redirect; a `redirect_uri` not on the list is rejected). Only
+  meaningful alongside `clientId`.
+
+Both are **self-declared and self-constraining** — they only ever affect this
+Project's own login flow — so they carry no separate admin approval gesture; they
+ride along with the install the admin already authorizes (shown for legibility).
+The **`official`** verified-badge bit (`54`) is the exception: it is never
+self-declared, stays operator-only, and lives on the Project's directory entry.
 
 There is **no client secret**: same-device is a public client protected by PKCE,
 and the device grant relies on the high-entropy `device_code` returned only to

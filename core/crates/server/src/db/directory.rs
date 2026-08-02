@@ -33,20 +33,25 @@ pub struct ProjectEntry {
 }
 
 /// A legacy `PROJECTS`-env entry to seed once at startup, preserving its
-/// operator-set `official` flag and OAuth `client_id`.
+/// operator-set `official` flag. OAuth client ids are no longer configured via
+/// env (docs/25) — they live on the `projects` row set at manifest install.
 pub struct SeedEntry {
     pub name: String,
     pub url: String,
     pub description: String,
-    pub client_id: Option<String>,
     pub official: bool,
 }
 
-/// Every directory entry, in display order.
+/// Every directory entry, in display order. The OAuth `client_id` is *inherited*
+/// from the owning Project (`projects.oauth_client_id`) via a join — the
+/// authoritative registration lives on the Project entity (docs/25), not copied
+/// onto each directory row. Unowned/seeded rows (`project_id IS NULL`) have none.
 pub async fn list(conn: &mut PgConnection) -> Result<Vec<DirectoryEntry>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT name, url, description, client_id, official
-         FROM directory_entries ORDER BY position, id",
+        "SELECT d.name, d.url, d.description, p.oauth_client_id AS client_id, d.official
+         FROM directory_entries d
+         LEFT JOIN projects p ON p.id = d.project_id
+         ORDER BY d.position, d.id",
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -103,20 +108,20 @@ pub async fn is_empty(conn: &mut PgConnection) -> Result<bool, sqlx::Error> {
 }
 
 /// Seed operator entries (from the legacy `PROJECTS` env var) as unowned
-/// (`project_id = NULL`) rows, preserving their `official`/`client_id`. Caller
-/// guards on [`is_empty`].
+/// (`project_id = NULL`) rows, preserving their operator-set `official` flag.
+/// These are display-only directory rows; OAuth login clients are not configured
+/// via env (docs/25). Caller guards on [`is_empty`].
 pub async fn seed(conn: &mut PgConnection, entries: &[SeedEntry]) -> Result<(), sqlx::Error> {
     let mut tx = conn.begin().await?;
     for (i, e) in entries.iter().enumerate() {
         sqlx::query(
             "INSERT INTO directory_entries
-                (project_id, name, url, description, client_id, official, position)
-             VALUES (NULL, $1, $2, $3, $4, $5, $6)",
+                (project_id, name, url, description, official, position)
+             VALUES (NULL, $1, $2, $3, $4, $5)",
         )
         .bind(&e.name)
         .bind(&e.url)
         .bind(&e.description)
-        .bind(&e.client_id)
         .bind(e.official)
         .bind(i as i32)
         .execute(&mut *tx)
