@@ -105,12 +105,12 @@ function readEnv(): Env {
     sharedSecret: process.env.REGISTRATION_SHARED_SECRET || undefined,
     // The externally-reachable base URL for this service — how your PHONE
     // reaches it (e.g. "http://192.168.1.50:3001"). Used to derive the OAuth
-    // redirect_uri, which must exactly match what's registered in the
-    // homeserver's PROJECTS config. Defaults to the local bind (fine only when
+    // redirect_uri, which must exactly match a `redirectUri` in the manifest
+    // this Project was installed with. Defaults to the local bind (fine only when
     // the phone is the same machine, which it usually isn't).
     publicUrl: (process.env.TESTBOT_PUBLIC_URL ?? `http://${bindHost === "0.0.0.0" ? "localhost" : bindHost}:${bindPort}`).replace(/\/$/, ""),
     // OAuth client id this demo registers as (docs/25). Must match the
-    // `client_id` in the homeserver's PROJECTS entry for this Project.
+    // `clientId` in the manifest this Project was installed with.
     oauthClientId: process.env.TESTBOT_OAUTH_CLIENT_ID ?? "testbot",
     // The app's `authorize` Universal Link (the app is the authorization
     // endpoint; docs/25). Fixed to the domain the app claims via AASA.
@@ -349,8 +349,8 @@ const indexHtml = (basePath: string) => `<!DOCTYPE html>
 
 // ── OAuth login demo page (docs/25) ──────────────────────────────────────────
 
-/** The exact redirect_uri this demo uses — must be registered in the
- *  homeserver's PROJECTS entry for `oauthClientId`. */
+/** The exact redirect_uri this demo uses — must be a `redirectUri` in the
+ *  manifest this Project (`oauthClientId`) was installed with. */
 function loginRedirectUri(env: Env): string {
   return `${env.publicUrl}${env.basePath}login`;
 }
@@ -944,28 +944,34 @@ function main(): void {
 
   server.listen(env.bindPort, env.bindHost, () => {
     console.log(`testbot: listening on ${env.bindHost}:${env.bindPort} (homeserver ${env.homeserverUrl})`);
-    // OAuth login demo (docs/25): print the exact PROJECTS entry to register on
-    // the homeserver so this service is a recognized OAuth client. The
-    // redirect_uri must match byte-for-byte what the phone browser will visit.
+    // OAuth login demo (docs/25): print the install manifest to register this
+    // service as a recognized login client. An operator installs this manifest
+    // via adminbot's `/install-project`, which puts the OAuth registration on the
+    // Project's `projects` row. The redirectUris must match byte-for-byte what
+    // the phone browser will visit.
     const redirectUri = loginRedirectUri(env);
-    const projectEntry = {
+    const manifest = {
+      slug: "testbot",
       name: "Testbot",
-      url: env.publicUrl,
       description: "Chat with an AI bot",
-      client_id: env.oauthClientId,
-      redirect_uris: [redirectUri],
-      official: true,
+      url: env.publicUrl,
+      permissions: [],
+      webEntries: [
+        { name: "Testbot", url: env.publicUrl, description: "Chat with an AI bot" },
+      ],
+      clientId: env.oauthClientId,
+      redirectUris: [redirectUri],
     };
     console.log(`testbot: OAuth login demo page → ${env.publicUrl}${env.basePath}login`);
     console.log(
-      `testbot: register this OAuth client on the homeserver (PROJECTS env):\n` +
-        `  PROJECTS='${JSON.stringify([projectEntry])}'`,
+      `testbot: install this manifest via adminbot's /install-project:\n` +
+        `  ${JSON.stringify(manifest)}`,
     );
     if (env.publicUrl.includes("localhost")) {
       console.warn(
         "testbot: TESTBOT_PUBLIC_URL is localhost — set it to this machine's " +
           "LAN URL (e.g. http://192.168.x.x:3001) so your phone can reach the " +
-          "demo, and re-register the PROJECTS redirect_uri to match.",
+          "demo, and re-install the manifest so its redirectUris match.",
       );
     }
   });

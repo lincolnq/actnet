@@ -10,6 +10,9 @@ DEPLOYMENTS="$AV_ROOT/deployments"
 CURRENT="$DEPLOYMENTS/current"
 SHARED="$AV_ROOT/shared"
 ETC="/etc/avalanche"
+# Project manifests adminbot installs non-interactively at startup (docs/22): one
+# per installed web Project, published into the DB directory + OAuth registry.
+MANIFESTS="$SHARED/manifests"
 
 log()  { echo "[avalanche] $*"; }
 warn() { echo "[avalanche] $*" >&2; }
@@ -110,6 +113,7 @@ REGISTRATION_SHARED_SECRET=$REGISTRATION_SHARED_SECRET
 ADMINBOT_STATE_DIR=$SHARED/adminbot-state
 ADMINBOT_DB_KEY=$key
 ADMINBOT_LOG=info
+ADMINBOT_MANIFEST_DIR=$MANIFESTS
 EOF
       install -d -o avalanche -g avalanche -m 750 "$SHARED/adminbot-state"
       ;;
@@ -140,9 +144,9 @@ project_web_meta() {
 }
 
 # OAuth login client id for a Project that supports "Sign in with Avalanche"
-# (docs/25); empty for Projects that don't. When set, regenerate_projects adds
-# client_id + the <url>/login redirect_uri + official flag to the PROJECTS entry
-# so the homeserver recognizes it as an OAuth client.
+# (docs/25); empty for Projects that don't. When set, write_project_manifests
+# adds clientId + the <base>/login redirect to the Project's manifest so adminbot
+# registers it as an OAuth login client on the `projects` row.
 project_oauth_client() {
   case "$1" in
     testbot) echo "testbot" ;;
@@ -150,40 +154,56 @@ project_oauth_client() {
   esac
 }
 
-# Regenerate the managed PROJECTS directory + Caddy routes from the web Projects
-# installed in current/. Server host only (needs avalanche.env for SERVER_URL
-# and a Caddyfile that imports the snippet). Callers reload caddy + restart
-# avalanche afterward. The `projects` DB table is unrelated -- this only feeds
-# the client-facing directory at GET /v1/projects (docs/42, docs/02 backlog).
-regenerate_projects() {
-  [ -f "$ETC/avalanche.env" ] || return 0   # not a server host
-  local server_url snippet="/etc/caddy/avalanche-projects.caddy"
-  local c meta port name desc entries=() json oauth_cid oauth_fields
-  server_url="$(grep '^SERVER_URL=' "$ETC/avalanche.env" | cut -d= -f2-)"
+# Write a Project manifest (docs/20) per installed web Project into MANIFESTS, so
+# adminbot installs it non-interactively at startup (via ADMINBOT_MANIFEST_DIR).
+# This is what publishes a web Project's client-directory entry + OAuth login
+# registration into the DB (there is no PROJECTS env). Regenerated from the
+# on-disk component set each run (a removed Project's manifest disappears); needs
+# SERVER_URL in scope. No-op if SERVER_URL is unset.
+write_project_manifests() {
+  local server_url="${SERVER_URL:-}"
+  [ -n "$server_url" ] || return 0
   server_url="${server_url%/}"
+  install -d -o avalanche -g avalanche -m 750 "$MANIFESTS"
+  rm -f "$MANIFESTS"/*.json 2>/dev/null || true
+  local c meta port name desc base cid oauth
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    meta="$(project_web_meta "$c")"
+    [ -n "$meta" ] || continue
+    IFS='|' read -r port name desc <<< "$meta"
+    base="$server_url/p/$c"
+    cid="$(project_oauth_client "$c")"
+    oauth=""
+    [ -n "$cid" ] && oauth=",\"clientId\":\"$cid\",\"redirectUris\":[\"$base/login\"]"
+    cat > "$MANIFESTS/$c.json" <<EOF
+{"slug":"$c","name":"$name","description":"$desc","url":"$base","permissions":[],"webEntries":[{"name":"$name","url":"$base/","description":"$desc"}]$oauth}
+EOF
+    chown avalanche:avalanche "$MANIFESTS/$c.json"
+    chmod 640 "$MANIFESTS/$c.json"
+  done < <(deployment_components "$CURRENT")
+}
+
+# Regenerate the Caddy reverse-proxy routes (/p/<slug>/*) for the web Projects
+# installed in current/. Server host only (needs avalanche.env; callers reload
+# caddy afterward). The client-facing directory (GET /v1/projects) and each
+# Project's OAuth login registration are NOT managed here — they live in the DB,
+# published by adminbot's /install-project manifest (docs/22, docs/25). This
+# function only wires HTTP routing.
+regenerate_project_routes() {
+  [ -f "$ETC/avalanche.env" ] || return 0   # not a server host
+  local snippet="/etc/caddy/avalanche-projects.caddy"
+  local c meta port name desc
   : > "$snippet"
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     meta="$(project_web_meta "$c")"
     [ -n "$meta" ] || continue
     IFS='|' read -r port name desc <<< "$meta"
-    # OAuth login client (docs/25): register client_id + the /login redirect_uri
-    # (the HTTPS URL Caddy serves this Project at) so "Sign in with Avalanche"
-    # works. redirect_uri matches the page's location.origin+pathname.
-    oauth_cid="$(project_oauth_client "$c")"
-    oauth_fields=""
-    if [ -n "$oauth_cid" ]; then
-      oauth_fields=",\"client_id\":\"$oauth_cid\",\"redirect_uris\":[\"$server_url/p/$c/login\"],\"official\":true"
-    fi
-    entries+=("{\"name\":\"$name\",\"url\":\"$server_url/p/$c/\",\"description\":\"$desc\"$oauth_fields}")
     cat >> "$snippet" <<EOF
 handle_path /p/$c/* {
     reverse_proxy 127.0.0.1:$port
 }
 EOF
   done < <(deployment_components "$CURRENT")
-  if [ "${#entries[@]}" -eq 0 ]; then json="[]"; else json="[$(IFS=,; echo "${entries[*]}")]"; fi
-  printf 'PROJECTS=%s\n' "$json" > "$ETC/projects.env"
-  chown root:avalanche "$ETC/projects.env"
-  chmod 640 "$ETC/projects.env"
 }

@@ -80,8 +80,6 @@ pub struct Config {
     /// Minimum interval in seconds a Project must wait between device-grant
     /// token polls (RFC 8628 `interval`/`slow_down`). Default: 5 seconds.
     pub oauth_device_poll_interval_secs: i64,
-    /// Installed Projects as JSON array: [{"name":"...","url":"...","description":"..."}].
-    pub projects_json: String,
     /// Push relay URL (e.g. "http://localhost:3002"). If unset, push is disabled.
     pub relay_url: Option<String>,
     /// Human-readable server name (shown to users during invite/onboarding).
@@ -177,8 +175,6 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),
-            projects_json: std::env::var("PROJECTS")
-                .unwrap_or_else(|_| "[]".to_string()),
             relay_url: std::env::var("RELAY_URL").ok(),
             server_name: std::env::var("SERVER_NAME")
                 .unwrap_or_else(|_| "Avalanche Server".to_string()),

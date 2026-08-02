@@ -128,7 +128,7 @@ $HOST {
     }
 }
 EOF
-  : > /etc/caddy/avalanche-projects.caddy   # import target; filled by regenerate_projects
+  : > /etc/caddy/avalanche-projects.caddy   # import target; filled by regenerate_project_routes
   if [ ! -f "$ETC/avalanche.env" ]; then
     cat > "$ETC/avalanche.env" <<EOF
 SERVER_URL=$SERVER_URL
@@ -165,13 +165,16 @@ ln -sfn "$TAG" "$CURRENT"
 systemctl daemon-reload
 
 if has server; then
-  regenerate_projects       # PROJECTS env + Caddy /p/<slug>/ routes for installed web Projects
+  regenerate_project_routes # Caddy /p/<slug>/ routes for installed web Projects
   systemctl enable caddy
   systemctl restart caddy   # apt already started it on the stock config
   sudo -u avalanche env DATABASE_URL='postgresql:///avalanche?host=/var/run/postgresql' \
     "$DEP/server/avalanche-server" migrate
   systemctl enable --now avalanche
 fi
+# Per-web-Project manifests for adminbot to auto-install (directory entry + OAuth
+# login). No-op without SERVER_URL / web Projects. Written before adminbot starts.
+write_project_manifests
 has adminbot && systemctl enable --now avalanche-adminbot
 has testbot  && systemctl enable --now avalanche-testbot
 
