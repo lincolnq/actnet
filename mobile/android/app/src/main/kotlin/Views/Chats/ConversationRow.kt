@@ -56,6 +56,9 @@ fun ConversationRow(
     isBotConversation: Boolean,
     previewText: String?,
     modifier: Modifier = Modifier,
+    // Off by default: organization (per-account tabs) now disambiguates which
+    // identity a conversation belongs to, replacing per-row marking (docs/37).
+    showsAccountBadge: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -67,17 +70,22 @@ fun ConversationRow(
         // Avatar placeholder — hexagon frame for bot DMs, circle for everyone else.
         val avatarShape = if (isBotConversation) Hexagon() else CircleShape
 
+        // Soft brand tint rather than `card`: the rows are now `card` too, so a
+        // `card` placeholder would vanish into the row (docs/37).
         Box(
             modifier = Modifier
                 .size(48.dp)
-                .background(color = LocalAvalancheColors.current.card, shape = avatarShape)
+                .background(
+                    color = LocalAvalancheColors.current.brand.copy(alpha = 0.15f),
+                    shape = avatarShape,
+                )
                 .clip(avatarShape),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 imageVector = if (conversation.isGroup) Icons.Filled.Group else Icons.Filled.Person,
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                tint = LocalAvalancheColors.current.brand,
                 modifier = Modifier.size(24.dp),
             )
         }
@@ -138,7 +146,7 @@ fun ConversationRow(
                 }
 
                 // Multi-account: show which identity this chat belongs to
-                if (account != null && accounts.size > 1) {
+                if (account != null && showsAccountBadge) {
                     val initial = account.displayName.firstOrNull()?.uppercaseChar()?.toString() ?: "?"
                     Box(
                         modifier = Modifier

@@ -92,7 +92,7 @@ class AppViewModel(
     // Tab enum — mirrors iOS AppState.Tab
     // -----------------------------------------------------------------------
 
-    enum class Tab { CHATS, NETWORK }
+    enum class Tab { CHATS, NETWORK, SETTINGS, SEARCH }
 
     // -----------------------------------------------------------------------
     // @Published fields — each becomes a StateFlow
@@ -148,6 +148,16 @@ class AppViewModel(
 
     private val _selectedTab = MutableStateFlow(Tab.CHATS)
     val selectedTab: StateFlow<Tab> = _selectedTab.asStateFlow()
+
+    // The account (identity) tab selected on the Chats screen's per-account
+    // strip (docs/37). Lives here — not in ChatsView — because the tab host
+    // recreates ChatsView on every bottom-tab switch, and composable-local
+    // state would reset (one unfiltered frame = visible flicker) and lose the
+    // user's selection. Null until the user explicitly picks a tab; the view
+    // derives the effective default (first account) synchronously.
+    private val _selectedAccountTab = MutableStateFlow<String?>(null)
+    val selectedAccountTab: StateFlow<String?> = _selectedAccountTab.asStateFlow()
+    fun setSelectedAccountTab(accountId: String?) { _selectedAccountTab.value = accountId }
 
     private val _navigateToConversation = MutableStateFlow<Conversation?>(null)
     val navigateToConversation: StateFlow<Conversation?> = _navigateToConversation.asStateFlow()

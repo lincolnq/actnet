@@ -499,6 +499,19 @@ fun AppNavGraph(
                 },
                 onOpenAccounts = { navController.navigate(Route.ACCOUNTS) },
                 onOpenCompose = { navController.navigate(Route.COMPOSE) },
+                // Settings-tab (AccountsView pane) deep navigation — same
+                // wiring as the standalone ACCOUNTS route.
+                onScanInvite = { _ -> navController.navigate(Route.SCANNER) },
+                onShowScanner = { _ -> navController.navigate(Route.SCANNER) },
+                onNavigateToScanner = { _ -> navController.navigate(Route.SCANNER) },
+                onNavigateToIdentityDetail = { account ->
+                    navController.navigate(Route.identityDetail(account.id))
+                },
+                onNavigateToServerDetail = { account, server ->
+                    navController.navigate(Route.serverDetail(server.id))
+                },
+                onNavigateToAddAccount = { navController.navigate(Route.ADD_ACCOUNT) },
+                onOpenLogViewer = { navController.navigate(Route.LOG_VIEWER) },
             )
         }
 

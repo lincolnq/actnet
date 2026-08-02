@@ -80,6 +80,17 @@ fun lastMessagePreviewOf(hasContact: Boolean, firstAttachmentContentType: String
     else -> LastMessagePreviewFfi.FILE
 }
 
+/**
+ * Collapse a preview string to its first line — message bodies can contain hard
+ * line breaks and the chat-list preview must never render past the first line.
+ * Leading/trailing blank lines are trimmed first; the length cap just guards
+ * against a pathologically long single line (the row's `maxLines = 1` +
+ * ellipsis then does the width-based truncation). Mirrors iOS
+ * `ConversationRow.firstLinePreview`.
+ */
+fun firstLinePreview(text: String): String =
+    text.trim().lineSequence().firstOrNull().orEmpty().take(200)
+
 fun lastMessagePreviewDecoration(preview: LastMessagePreviewFfi?): Pair<String, String>? = when (preview) {
     LastMessagePreviewFfi.PHOTO -> "📷" to "Photo"
     LastMessagePreviewFfi.FILE -> "📎" to "Attachment"

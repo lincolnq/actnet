@@ -65,6 +65,9 @@ fun AccountsView(
     onNavigateToServerDetail: (Account, ServerInfo) -> Unit = { _, _ -> },
     onNavigateToAddAccount: () -> Unit = {},
     onOpenLogViewer: () -> Unit = {},
+    // False when hosted as the Settings *tab pane* (docs/37) — a tab has no
+    // back affordance; true when pushed as a standalone route.
+    showsBackButton: Boolean = true,
 ) {
     val accounts by viewModel.accounts.collectAsState()
     val context = LocalContext.current
@@ -105,12 +108,17 @@ fun AccountsView(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onDismiss) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = LocalAvalancheColors.current.ink,
-                )
+            if (showsBackButton) {
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
+                        tint = LocalAvalancheColors.current.ink,
+                    )
+                }
+            } else {
+                // Balancing spacer keeps the title centered without the button.
+                Spacer(modifier = Modifier.width(48.dp))
             }
             Text(
                 text = "Accounts",
