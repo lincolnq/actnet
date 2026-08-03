@@ -95,7 +95,12 @@ val DarkAvalancheColors = AvalancheSemanticColors(
     brand = AvalancheColors.Plum200,
     paper = AvalancheColors.Plum900,
     ink = AvalancheColors.Sand50,
-    muted = AvalancheColors.Sand300,
+    // Sand400, not Sand300: Sand300 is nearly the same lightness as ink
+    // (Sand50) on dark surfaces, so "muted" text read as primary text.
+    // TRIAL (Android-first): if it sticks, mirror to iOS AvalancheColors.swift
+    // (avMuted dark) and the Desktop theme in the same change — cross-platform
+    // token parity.
+    muted = AvalancheColors.Sand400,
     incomingBubble = AvalancheColors.Plum800,
     outgoingBubble = AvalancheColors.Plum500, // always on plum; stands out in both modes
     card = AvalancheColors.Plum800,

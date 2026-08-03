@@ -7,23 +7,28 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AddCircle
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
@@ -66,11 +71,23 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.Dp
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import uniffi.app_core.ContactRowFfi
@@ -176,13 +193,25 @@ fun ComposeMessageView(
         allContacts.filter { it.accountIds.contains(acting) }
     }
 
+    // Query matching: names always; DIDs only when the query itself looks
+    // like a DID (starts with "did:"). DIDs are effectively random strings —
+    // substring-matching them against a short name query surfaces unrelated
+    // contacts via letters the user can't even see.
+    fun matchesQuery(c: AppViewModel.AccountContact, q: String): Boolean {
+        if (q.isEmpty()) return true
+        return if (q.startsWith("did:")) {
+            c.row.did.lowercase().startsWith(q)
+        } else {
+            c.row.displayName.lowercase().contains(q)
+        }
+    }
+
     val peopleResults: List<AppViewModel.AccountContact> = run {
         val q = trimmedQuery.lowercase()
         reachableContacts.filter { c ->
             if (!c.row.isCurated) return@filter false
             if (chips.any { it.did == c.row.did }) return@filter false
-            if (q.isEmpty()) return@filter true
-            c.row.displayName.lowercase().contains(q) || c.row.did.lowercase().contains(q)
+            matchesQuery(c, q)
         }
     }
 
@@ -191,29 +220,57 @@ fun ComposeMessageView(
         reachableContacts.filter { c ->
             if (c.row.isCurated) return@filter false
             if (chips.any { it.did == c.row.did }) return@filter false
-            if (q.isEmpty()) return@filter true
-            c.row.displayName.lowercase().contains(q) || c.row.did.lowercase().contains(q)
+            matchesQuery(c, q)
         }
     }
 
-    // The active identity's own display name — the "Note to Self" match target.
-    val selfName: String = run {
-        val id = activeAccountId ?: return@run ""
-        accounts.firstOrNull { it.id == id }?.displayName ?: ""
-    }
-
-    // Whether to surface the "Note to Self" shortcut (a DM with your own
-    // identity — docs/04 §5.5, like Signal): when self isn't already a recipient
-    // and the query is empty or matches self (name, DID, or label).
-    val showNoteToSelf: Boolean = run {
-        val id = activeAccountId ?: return@run false
-        if (chips.any { it.did == id }) return@run false
+    // "Note to Self" candidates (a DM with your own identity — docs/04 §5.5,
+    // like Signal). Deliberately quiet: it appears ONLY when the user has
+    // typed a substring of "note to self", there are no recipients yet
+    // (adding yourself to a group makes no sense), and it renders *below*
+    // any matching contacts. While From is empty there's no single "self",
+    // so each account gets its own labeled entry — picking one fills From,
+    // exactly like picking a contact does.
+    val noteToSelfCandidates: List<Account> = run {
+        if (chips.isNotEmpty()) return@run emptyList()
         val q = trimmedQuery.lowercase()
-        if (q.isEmpty()) return@run true
-        "note to self".contains(q) || selfName.lowercase().contains(q) || id.lowercase().contains(q)
+        if (q.isEmpty() || !"note to self".contains(q)) return@run emptyList()
+        when {
+            activeAccountId != null -> accounts.filter { it.id == activeAccountId }
+            else -> accounts
+        }
     }
 
     val newGroupTitle: String = if (chips.isEmpty()) "New Empty Group" else "New Group (${chips.count()})"
+
+    // Display names that appear on more than one visible contact (e.g. the
+    // testbot re-registered across dev-server resets, or two humans genuinely
+    // sharing a name). Those rows get a shortened-DID subtitle so identical
+    // names are tellable apart — collapsing them instead would let a
+    // name-spoofer hide behind a real contact (docs/12).
+    val collidingNames: Set<String> = reachableContacts
+        .groupingBy { contactName(it).lowercase() }
+        .eachCount()
+        .filterValues { it > 1 }
+        .keys
+
+    fun subtitleFor(c: AppViewModel.AccountContact): String? =
+        if (contactName(c).lowercase() in collidingNames) shortenDid(c.row.did) else null
+
+    // The token field owns the chip content (chips are characters in its text
+    // buffer — RecipientTokenField.kt, mirroring iOS); Compose pushes new
+    // chips in through this handle and mirrors state back via callbacks.
+    val tokenHandle = remember { RecipientFieldHandle() }
+
+    // Keep the keyboard up on this screen: the token field is the screen's
+    // whole interaction model (full-screen browsing lives behind the + picker).
+    // Re-raise it whenever the picker sheet closes; also fires once on entry
+    // (backs up the field's own autofocus).
+    LaunchedEffect(showingContactPicker) {
+        if (!showingContactPicker) {
+            tokenHandle.focusAndShowKeyboard()
+        }
+    }
 
     // Load the merged contact book once (re-merged if the account set changes).
     LaunchedEffect(accounts) {
@@ -233,10 +290,7 @@ fun ComposeMessageView(
     }
 
     fun addChip(did: String, displayName: String) {
-        if (chips.none { it.did == did }) {
-            chips.add(ComposeChip(id = did, did = did, displayName = displayName))
-            query = ""
-        }
+        tokenHandle.addChip(Chip(id = did, did = did, displayName = displayName))
     }
 
     // Adding a contact from the merged book: if From is still empty, the pick
@@ -303,7 +357,14 @@ fun ComposeMessageView(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                // Consume the insets innerPadding already applied, else
+                // imePadding stacks the keyboard height ON TOP of the
+                // nav-bar inset — a phantom gap below the action bar.
+                .consumeWindowInsets(innerPadding)
+                // Keep the DM / New Group action bar above the keyboard
+                // (mirrors iOS, where the buttons stay visible while typing).
+                .imePadding(),
         ) {
             // Account picker (only shown when there are multiple accounts)
             if (accounts.size > 1) {
@@ -317,10 +378,13 @@ fun ComposeMessageView(
 
             // Recipient field with chips
             RecipientFieldRow(
-                chips = chips,
-                query = query,
+                initialChips = chips.toList(),
+                handle = tokenHandle,
+                onChipsChanged = { new ->
+                    chips.clear()
+                    chips.addAll(new.map { ComposeChip(id = it.id, did = it.did, displayName = it.displayName) })
+                },
                 onQueryChange = { query = it },
-                onChipRemove = { chips.remove(it) },
                 onAddTapped = { showingContactPicker = true },
                 onSubmit = { commitQueryAsChip() },
             )
@@ -350,30 +414,6 @@ fun ComposeMessageView(
                     }
                 }
 
-                // Note to Self shortcut
-                if (showNoteToSelf) {
-                    item {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    addChip(did = activeAccountId ?: "", displayName = "Note to Self")
-                                }
-                                .padding(horizontal = 16.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(
-                                Icons.Filled.Bookmark,
-                                contentDescription = null,
-                                tint = LocalAvalancheColors.current.brand,
-                                modifier = Modifier.size(32.dp),
-                            )
-                            Spacer(Modifier.width(10.dp))
-                            Text("Note to Self", maxLines = 1)
-                        }
-                    }
-                }
-
                 // People section
                 if (peopleResults.isNotEmpty()) {
                     item {
@@ -387,6 +427,7 @@ fun ComposeMessageView(
                     items(peopleResults, key = { it.row.did }) { c ->
                         ContactRowItem(
                             name = contactName(c),
+                            subtitle = subtitleFor(c),
                             isBot = isBot(c),
                             onClick = { addContactChip(c) },
                         )
@@ -406,14 +447,44 @@ fun ComposeMessageView(
                     items(otherResults, key = { it.row.did }) { c ->
                         ContactRowItem(
                             name = contactName(c),
+                            subtitle = subtitleFor(c),
                             isBot = isBot(c),
                             onClick = { addContactChip(c) },
                         )
                     }
                 }
 
+                // Note to Self — only on a typed "note to self" substring
+                // match, below any matching contacts (see candidates above).
+                items(noteToSelfCandidates, key = { "self-${it.id}" }) { acct ->
+                    val label =
+                        if (noteToSelfCandidates.size > 1) "Note to Self (${acct.displayName})"
+                        else "Note to Self"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                if (activeAccountId == null) {
+                                    selectedAccountId = acct.id
+                                }
+                                addChip(did = acct.id, displayName = "Note to Self")
+                            }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.Bookmark,
+                            contentDescription = null,
+                            tint = LocalAvalancheColors.current.brand,
+                            modifier = Modifier.size(32.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(label, maxLines = 1)
+                    }
+                }
+
                 // Empty state
-                if (peopleResults.isEmpty() && otherResults.isEmpty() && !queryLooksLikeDid && !showNoteToSelf) {
+                if (peopleResults.isEmpty() && otherResults.isEmpty() && !queryLooksLikeDid && noteToSelfCandidates.isEmpty()) {
                     item {
                         Text(
                             "No more contacts to add.",
@@ -446,6 +517,7 @@ fun ComposeMessageView(
             contacts = reachableContacts,
             excludedDids = chips.map { it.did }.toSet(),
             nameFor = { contactName(it) },
+            subtitleFor = { subtitleFor(it) },
             isBotFor = { isBot(it) },
             onSelect = { c ->
                 addContactChip(c)
@@ -475,37 +547,45 @@ private fun AccountPickerRow(
     selectedAccountId: String?,
     onAccountSelected: (String?) -> Unit,
 ) {
-    // No fallback: an empty From renders empty (with a placeholder) until the
-    // user picks an account — or until picking a contact fills it in.
+    // No fallback: an empty From renders its placeholder until the user picks
+    // an account — or until picking a contact fills it in. Compact single-line
+    // row (no Material text-field chrome — the outlined dropdown box was ~56dp
+    // tall for one line of text).
     val selected = accounts.firstOrNull { it.id == selectedAccountId }
     var expanded by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("From", color = LocalAvalancheColors.current.muted, modifier = Modifier.padding(end = 8.dp))
+        Text("From:", color = LocalAvalancheColors.current.muted, modifier = Modifier.padding(end = 6.dp))
         ExposedDropdownMenuBox(
             expanded = expanded,
             onExpandedChange = { expanded = it },
-            modifier = Modifier.weight(1f),
         ) {
-            OutlinedTextField(
-                value = selected?.displayName ?: "",
-                onValueChange = {},
-                readOnly = true,
-                singleLine = true,
-                placeholder = {
-                    Text("Choose account", color = LocalAvalancheColors.current.muted)
-                },
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
+            Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
-            )
+                    .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
+                    .clip(RoundedCornerShape(8.dp))
+                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = selected?.displayName ?: "Choose account",
+                    fontSize = 16.sp,
+                    color = if (selected != null) LocalAvalancheColors.current.ink
+                    else LocalAvalancheColors.current.muted,
+                    maxLines = 1,
+                )
+                Icon(
+                    Icons.Filled.ArrowDropDown,
+                    contentDescription = null,
+                    tint = LocalAvalancheColors.current.muted,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
             ExposedDropdownMenu(
                 expanded = expanded,
                 onDismissRequest = { expanded = false },
@@ -528,77 +608,83 @@ private fun AccountPickerRow(
 // Recipient field with chips and query input
 // ---------------------------------------------------------------------------
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun RecipientFieldRow(
-    chips: SnapshotStateList<ComposeChip>,
-    query: String,
+    initialChips: List<ComposeChip>,
+    handle: RecipientFieldHandle,
+    onChipsChanged: (List<Chip>) -> Unit,
     onQueryChange: (String) -> Unit,
-    onChipRemove: (ComposeChip) -> Unit,
     onAddTapped: () -> Unit,
     onSubmit: () -> Unit,
 ) {
+    // Real first-line metrics reported by the EditText post-layout (px from
+    // its top): AndroidView doesn't participate in Compose baseline
+    // alignment, so the label and + button are positioned from these
+    // measurements instead of guessed paddings.
+    val density = LocalDensity.current
+    var fieldBaselinePx by remember { mutableStateOf<Int?>(null) }
+    var fieldCenterPx by remember { mutableStateOf<Int?>(null) }
+    var labelBaselinePx by remember { mutableStateOf<Float?>(null) }
+
+    val labelTopPad: Dp = run {
+        val fb = fieldBaselinePx
+        val lb = labelBaselinePx
+        if (fb == null || lb == null) 12.dp // pre-measure fallback, corrected next frame
+        else with(density) { (fb - lb).coerceAtLeast(0f).toDp() }
+    }
+    val iconTopPad: Dp = run {
+        val c = fieldCenterPx
+        if (c == null) 8.dp // pre-measure fallback
+        else with(density) { (c - 14.dp.toPx()).coerceAtLeast(0f).toDp() }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 2.dp),
         verticalAlignment = Alignment.Top,
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    "To:",
-                    modifier = Modifier.align(Alignment.CenterVertically),
-                    color = LocalAvalancheColors.current.muted,
-                )
-                chips.forEach { chip ->
-                    InputChip(
-                        selected = false,
-                        onClick = { onChipRemove(chip) },
-                        label = { Text(chip.label, maxLines = 1) },
-                        trailingIcon = {
-                            Icon(
-                                Icons.Filled.Close,
-                                contentDescription = "Remove ${chip.label}",
-                                modifier = Modifier.size(InputChipDefaults.AvatarSize),
-                            )
-                        },
-                        colors = InputChipDefaults.inputChipColors(
-                            containerColor = LocalAvalancheColors.current.brand.copy(alpha = 0.15f),
-                            labelColor = LocalAvalancheColors.current.ink,
-                        ),
-                    )
-                }
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = onQueryChange,
-                    placeholder = { Text("Type a name", color = LocalAvalancheColors.current.muted) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { onSubmit() }),
-                    modifier = Modifier.width(180.dp),
-                    // Borderless to match the iOS UITextView-style field that blends
-                    // into the recipient flow row (no visible outline).
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = Color.Transparent,
-                        unfocusedBorderColor = Color.Transparent,
-                        disabledBorderColor = Color.Transparent,
-                        errorBorderColor = Color.Transparent,
-                    ),
-                )
-            }
-        }
-        IconButton(onClick = onAddTapped) {
-            Icon(
-                Icons.Filled.AddCircle,
-                contentDescription = "Add recipient",
-                tint = LocalAvalancheColors.current.brand,
-                modifier = Modifier.size(28.dp),
-            )
-        }
+        Text(
+            "To:",
+            color = LocalAvalancheColors.current.muted,
+            fontSize = 16.sp,
+            onTextLayout = { labelBaselinePx = it.firstBaseline },
+            modifier = Modifier.padding(top = labelTopPad, end = 6.dp),
+        )
+        // The real token field (RecipientTokenField.kt): one EditText whose
+        // chips are ImageSpan characters, mirroring the iOS UITextView +
+        // NSTextAttachment design. Native text behavior for free: wrapping,
+        // caret placement, chip selection, and the two-stage backspace
+        // (first press selects the chip, second deletes it). Placeholder is
+        // the EditText hint, which the platform shows only when the buffer is
+        // completely empty (no chips, no text).
+        RecipientTokenField(
+            chips = initialChips.map { Chip(id = it.id, did = it.did, displayName = it.displayName) },
+            query = "",
+            placeholder = "Type a name",
+            handle = handle,
+            onChipsChanged = onChipsChanged,
+            onQueryChanged = onQueryChange,
+            onSubmit = onSubmit,
+            onFirstLineMetrics = { baseline, center ->
+                fieldBaselinePx = baseline
+                fieldCenterPx = center
+            },
+            modifier = Modifier.weight(1f),
+        )
+        // Plain sized icon, not IconButton — IconButton enforces a 48dp
+        // minimum touch target that would dictate the row height. Centered on
+        // the field's measured first line.
+        Icon(
+            Icons.Filled.AddCircle,
+            contentDescription = "Add recipient",
+            tint = LocalAvalancheColors.current.brand,
+            modifier = Modifier
+                .padding(top = iconTopPad)
+                .size(28.dp)
+                .clip(RoundedCornerShape(percent = 50))
+                .clickable(onClick = onAddTapped),
+        )
     }
 }
 
@@ -611,6 +697,8 @@ private fun ContactRowItem(
     name: String,
     isBot: Boolean,
     onClick: () -> Unit,
+    /** Shortened DID shown under the name when display names collide. */
+    subtitle: String? = null,
 ) {
     Row(
         modifier = Modifier
@@ -621,7 +709,17 @@ private fun ContactRowItem(
     ) {
         ContactAvatar(name = name, isBot = isBot, size = 32.dp)
         Spacer(Modifier.width(10.dp))
-        Text(name, maxLines = 1)
+        Column {
+            Text(name, maxLines = 1)
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    maxLines = 1,
+                    fontSize = 12.sp,
+                    color = LocalAvalancheColors.current.muted,
+                )
+            }
+        }
     }
 }
 
@@ -707,6 +805,7 @@ private fun ContactPickerSheet(
     contacts: List<AppViewModel.AccountContact>,
     excludedDids: Set<String>,
     nameFor: (AppViewModel.AccountContact) -> String,
+    subtitleFor: (AppViewModel.AccountContact) -> String? = { null },
     isBotFor: (AppViewModel.AccountContact) -> Boolean,
     onSelect: (AppViewModel.AccountContact) -> Unit,
     onScanLink: (String) -> Boolean,
@@ -722,7 +821,14 @@ private fun ContactPickerSheet(
         contacts.filter { c ->
             if (excludedDids.contains(c.row.did)) return@filter false
             if (q.isEmpty()) return@filter true
-            nameFor(c).lowercase().contains(q) || c.row.did.lowercase().contains(q)
+            // Same rule as the autocomplete: names always, DIDs only for a
+            // did:-shaped query (substring-matching random DID characters
+            // against a name query surfaces unrelated contacts).
+            if (q.startsWith("did:")) {
+                c.row.did.lowercase().startsWith(q)
+            } else {
+                nameFor(c).lowercase().contains(q)
+            }
         }
     }
     val people = filtered.filter { it.row.isCurated }
@@ -799,6 +905,7 @@ private fun ContactPickerSheet(
                     items(people, key = { it.row.did }) { c ->
                         ContactRowItem(
                             name = nameFor(c),
+                            subtitle = subtitleFor(c),
                             isBot = isBotFor(c),
                             onClick = { onSelect(c) },
                         )
@@ -818,6 +925,7 @@ private fun ContactPickerSheet(
                     items(other, key = { it.row.did }) { c ->
                         ContactRowItem(
                             name = nameFor(c),
+                            subtitle = subtitleFor(c),
                             isBot = isBotFor(c),
                             onClick = { onSelect(c) },
                         )

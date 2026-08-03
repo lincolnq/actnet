@@ -15,6 +15,7 @@ import android.text.style.ImageSpan
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.TextView
 import androidx.compose.runtime.Composable
@@ -79,6 +80,11 @@ class RecipientFieldHandle {
     fun addChip(chip: Chip) {
         editText?.insertChip(chip)
     }
+
+    /** Focus the field and raise the soft keyboard (compose keeps it up). */
+    fun focusAndShowKeyboard() {
+        editText?.focusAndShowKeyboard()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -110,12 +116,38 @@ class RecipientTokenEditText(context: Context) : EditText(context) {
                 android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE or
                 android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         background = null
-        setPadding(0, 12, 0, 12)
+        textSize = 16f // sp — matches the Compose body size used around it
+
+        val density = resources.displayMetrics.density
+        setPadding(0, (8 * density).toInt(), 0, (8 * density).toInt())
+
+        // Pin every line to the chip-line height so the field doesn't change
+        // height (and shove the layout around) between empty / typed-text /
+        // has-chips states: a chip line is text height + 2×3dp pill padding,
+        // so make ALL lines that tall up front.
+        val fm = paint.fontMetrics
+        val chipLineHeight = ((fm.descent - fm.ascent) + 6 * density).toInt()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            lineHeight = chipLineHeight
+        } else {
+            val extra = chipLineHeight - (fm.descent - fm.ascent)
+            setLineSpacing(extra, 1f)
+        }
+
+        // Palette (resolved from the View's night-mode config — not a
+        // Composable, so it can't read LocalAvalancheColors): ink text, muted
+        // hint. Without these the EditText inherits Activity-theme defaults,
+        // which are wrong in dark mode.
+        val sem = avalancheSemanticColors(context)
+        setTextColor(sem.ink.toArgb())
+        setHintTextColor(sem.muted.toArgb())
 
         // Brand tint for the text-selection highlight (all APIs) and the caret
         // (API 29+ via the textCursorDrawable setter; older devices fall back to
-        // the platform accent color).
-        highlightColor = avalancheSemanticColors(context).brand.copy(alpha = 0.3f).toArgb()
+        // the platform accent color). Kept subtle — chip selection is shown by
+        // swapping the pill to its inverted state (see onSelectionChanged), so
+        // the rectangle is a secondary cue, not the selection UI itself.
+        highlightColor = sem.brand.copy(alpha = 0.15f).toArgb()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             textCursorDrawable?.mutate()?.let { caret ->
                 caret.setTint(avalancheSemanticColors(context).brand.toArgb())
@@ -182,8 +214,106 @@ class RecipientTokenEditText(context: Context) : EditText(context) {
     }
 
     // -----------------------------------------------------------------------
+    // Selected-chip rendering: a selected chip redraws as its inverted pill
+    // (solid brand fill, white text — the iOS selected-token look) instead of
+    // relying on the translucent selection rectangle, which overlaps the pill
+    // poorly (it covers the full line box and the pill's trailing gap).
+    // -----------------------------------------------------------------------
+
+    override fun onSelectionChanged(selStart: Int, selEnd: Int) {
+        super.onSelectionChanged(selStart, selEnd)
+        val s = text ?: return
+        val spans = s.getSpans(0, s.length, ChipSpan::class.java)
+        for (span in spans) {
+            val start = s.getSpanStart(span)
+            val end = s.getSpanEnd(span)
+            if (start < 0) continue
+            val selected = selStart != selEnd && start >= selStart && end <= selEnd
+            if (span.selected != selected) {
+                // Restyle in place: swap the span for one carrying the other
+                // pill bitmap at the same range. Watcher suppressed — the
+                // chip set hasn't changed, only its look.
+                suppressTextWatcher = true
+                try {
+                    s.removeSpan(span)
+                    val bitmap = renderChipBitmap(span.chip.label, selected)
+                    val drawable = BitmapDrawable(resources, bitmap).apply {
+                        setBounds(0, 0, bitmap.width, bitmap.height)
+                    }
+                    s.setSpan(
+                        ChipSpan(drawable, span.chip, selected),
+                        start,
+                        end,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                } finally {
+                    suppressTextWatcher = false
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Reading state
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Tap-to-select: tapping a chip selects it (which renders it inverted via
+    // onSelectionChanged) — matching iOS, where a tap on a token selects it.
+    // The default EditText tap just parks the caret next to the chip.
+    // -----------------------------------------------------------------------
+
+    private var touchDownX = 0f
+    private var touchDownY = 0f
+
+    override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+        when (event.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                touchDownX = event.x
+                touchDownY = event.y
+            }
+            android.view.MotionEvent.ACTION_UP -> {
+                val slop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+                val isTap = kotlin.math.abs(event.x - touchDownX) <= slop &&
+                    kotlin.math.abs(event.y - touchDownY) <= slop
+                if (isTap) {
+                    val result = super.onTouchEvent(event) // caret placement, focus, IME
+                    val s = text
+                    if (s != null) {
+                        val offset = getOffsetForPosition(event.x, event.y)
+                        val span = s.getSpans(offset, offset, ChipSpan::class.java).firstOrNull()
+                            ?: if (offset > 0) {
+                                s.getSpans(offset - 1, offset, ChipSpan::class.java).firstOrNull()
+                            } else {
+                                null
+                            }
+                        if (span != null) {
+                            val start = s.getSpanStart(span)
+                            val end = s.getSpanEnd(span)
+                            // Post so it lands after super's own caret move.
+                            post { setSelection(start, end) }
+                        }
+                    }
+                    return result
+                }
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+
+    /**
+     * Focus + raise the IME. `requestFocus()` alone doesn't show the keyboard
+     * for a view inside Compose's AndroidView — the explicit
+     * [InputMethodManager.showSoftInput] is required, posted so it runs after
+     * focus/layout settles.
+     */
+    fun focusAndShowKeyboard() {
+        requestFocus()
+        post {
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
 
     val currentChips: List<Chip>
         get() {
@@ -278,10 +408,10 @@ class RecipientTokenEditText(context: Context) : EditText(context) {
      * Render a chip pill bitmap with the same geometry as iOS:
      * hPad=9dp, vPad=3dp, trailing gap=6dp, cornerRadius = height/2.
      * Normal state: brand fill at 15% opacity, Ink text.
-     * (Selected state uses brand fill + white text — Android's selection
-     * highlight covers the chip, so we don't need to swap images ourselves.)
+     * Selected state: solid brand fill, white text (the iOS selected-token
+     * look) — swapped in by [onSelectionChanged].
      */
-    private fun renderChipBitmap(label: String): Bitmap {
+    internal fun renderChipBitmap(label: String, selected: Boolean = false): Bitmap {
         val density = resources.displayMetrics.density
         val hPad = (9 * density)
         val vPad = (3 * density)
@@ -292,11 +422,9 @@ class RecipientTokenEditText(context: Context) : EditText(context) {
         val sem = avalancheSemanticColors(context)
 
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = textSize.coerceAtLeast(14 * density)
-            color = sem.ink.toArgb()
+            // Use the EditText's current text paint size for consistency.
+            textSize = this@RecipientTokenEditText.paint.textSize
         }
-        // Use the EditText's current text paint size for consistency.
-        textPaint.textSize = paint.textSize
 
         val textWidth = textPaint.measureText(label)
         val fm = textPaint.fontMetrics
@@ -314,12 +442,16 @@ class RecipientTokenEditText(context: Context) : EditText(context) {
         val canvas = Canvas(bmp)
 
         val brandColor = sem.brand.toArgb()
-        val bgColor = android.graphics.Color.argb(
-            (0.15f * 255).toInt(),
-            android.graphics.Color.red(brandColor),
-            android.graphics.Color.green(brandColor),
-            android.graphics.Color.blue(brandColor),
-        )
+        val bgColor = if (selected) {
+            brandColor
+        } else {
+            android.graphics.Color.argb(
+                (0.15f * 255).toInt(),
+                android.graphics.Color.red(brandColor),
+                android.graphics.Color.green(brandColor),
+                android.graphics.Color.blue(brandColor),
+            )
+        }
 
         val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = bgColor }
         val pill = RectF(0f, 0f, pillWidth, pillHeight)
@@ -328,7 +460,7 @@ class RecipientTokenEditText(context: Context) : EditText(context) {
         // Draw label text centered in the pill.
         val textX = hPad
         val textY = vPad - fm.ascent
-        textPaint.color = sem.ink.toArgb()
+        textPaint.color = if (selected) android.graphics.Color.WHITE else sem.ink.toArgb()
         canvas.drawText(label, textX, textY, textPaint)
 
         return bmp
@@ -348,11 +480,63 @@ class RecipientTokenEditText(context: Context) : EditText(context) {
  * Tags a chip character with its [Chip] data so we can extract recipients
  * back out of the [Editable]. Extends [ImageSpan] so the pill bitmap is
  * drawn in-line, exactly as [NSTextAttachment] does on iOS.
+ *
+ * Vertically **centers** the pill on the text line (stock `ALIGN_BASELINE`
+ * puts the pill's bottom on the baseline, floating it high above neighboring
+ * text — the "poorly overlapping selection" look). Centering also keeps the
+ * line box symmetric around the text so the selection rectangle hugs the pill.
  */
 class ChipSpan(
     drawable: android.graphics.drawable.Drawable,
     val chip: Chip,
-) : ImageSpan(drawable, ALIGN_BASELINE)
+    val selected: Boolean = false,
+) : ImageSpan(drawable, ALIGN_BASELINE) {
+
+    override fun getSize(
+        paint: Paint,
+        text: CharSequence?,
+        start: Int,
+        end: Int,
+        fm: Paint.FontMetricsInt?,
+    ): Int {
+        // Deliberately do NOT expand the line metrics to the pill height: the
+        // EditText already pins every line to pill height via setLineHeight
+        // (font line + spacing), and inflating fm here would ADD the pill
+        // overhead on top of that spacing — making chip lines ~6dp taller
+        // than text lines (a visible field-height jump when the first chip
+        // lands). The pill instead draws centered, overflowing the font box
+        // ~3dp into the reserved line spacing.
+        if (fm != null) {
+            val pfm = paint.fontMetricsInt
+            fm.ascent = pfm.ascent
+            fm.top = pfm.top
+            fm.descent = pfm.descent
+            fm.bottom = pfm.bottom
+        }
+        return drawable.bounds.width()
+    }
+
+    override fun draw(
+        canvas: Canvas,
+        text: CharSequence?,
+        start: Int,
+        end: Int,
+        x: Float,
+        top: Int,
+        y: Int,
+        bottom: Int,
+        paint: Paint,
+    ) {
+        val d = drawable
+        val pfm = paint.fontMetricsInt
+        val fontCenter = y + (pfm.ascent + pfm.descent) / 2
+        val transY = fontCenter - d.bounds.height() / 2
+        canvas.save()
+        canvas.translate(x, transY.toFloat())
+        d.draw(canvas)
+        canvas.restore()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // RecipientTokenField Composable
@@ -385,11 +569,29 @@ fun RecipientTokenField(
     onChipsChanged: (List<Chip>) -> Unit = {},
     onQueryChanged: (String) -> Unit = {},
     onSubmit: () -> Unit = {},
+    /**
+     * Reports the field's first-line metrics in px, measured post-layout:
+     * (baseline from view top, first-line vertical center from view top).
+     * Compose siblings (the "To:" label, the add button) align to these real
+     * values instead of guessed paddings — AndroidView does not propagate a
+     * View's baseline to Compose's alignment-line system.
+     */
+    onFirstLineMetrics: ((baselinePx: Int, centerPx: Int) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     // We keep a reference to the underlying EditText so we can update prefix /
     // placeholder when Compose recomposes without re-creating the view.
     val editTextRef = remember { mutableListOf<RecipientTokenEditText>() }
+
+    fun reportMetrics(et: RecipientTokenEditText) {
+        val cb = onFirstLineMetrics ?: return
+        et.post {
+            // baseline is valid only after layout; lineHeight is fixed in init.
+            if (et.baseline >= 0) {
+                cb(et.baseline, et.paddingTop + et.lineHeight / 2)
+            }
+        }
+    }
 
     AndroidView(
         modifier = modifier,
@@ -402,12 +604,13 @@ fun RecipientTokenField(
                 et.setChips(chips)
                 handle.editText = et
 
-                // Auto-focus the field when it first appears, mirroring iOS
-                // `didMoveToWindow` auto-focus.
-                et.requestFocus()
+                // Auto-focus the field AND raise the keyboard when it first
+                // appears, mirroring iOS `didMoveToWindow` auto-focus.
+                et.focusAndShowKeyboard()
 
                 editTextRef.clear()
                 editTextRef.add(et)
+                reportMetrics(et)
             }
         },
         update = { et ->
@@ -417,6 +620,7 @@ fun RecipientTokenField(
             if (et.hint?.toString() != newHint) et.hint = newHint
             // Ensure the handle is wired (survives configuration changes).
             handle.editText = et
+            reportMetrics(et)
         },
     )
 }
