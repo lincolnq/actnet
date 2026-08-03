@@ -120,14 +120,31 @@ fun ComposeMessageView(
     // Local state
     val chips = remember { mutableStateListOf<ComposeChip>().also { it.addAll(initialChips) } }
     var query by remember { mutableStateOf("") }
+    // Acting identity ("From"). Deliberately EMPTY at first: the composer
+    // opens showing the whole merged contact book, and the identity gets
+    // fixed by whichever gesture comes first — picking a contact (From fills
+    // in from the contact's preferred identity) or choosing a From entry
+    // (the book filters to what that identity can reach). Either way the
+    // other side follows. Single-account users never see the From row and
+    // fall back to their only account at action time.
     var selectedAccountId by remember { mutableStateOf<String?>(null) }
-    var allContacts by remember { mutableStateOf<List<ContactRowFfi>>(emptyList()) }
+    var allContacts by remember { mutableStateOf<List<AppViewModel.AccountContact>>(emptyList()) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showingContactPicker by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
 
-    val activeAccountId: String? = selectedAccountId ?: accounts.firstOrNull()?.id
+    // The fixed acting identity, or null while From is still empty. Validated
+    // against the live account list (a removed account must not stick). With a
+    // single account there's no From row and no ambiguity — it's just active.
+    val activeAccountId: String? =
+        selectedAccountId?.takeIf { id -> accounts.any { it.id == id } }
+            ?: accounts.singleOrNull()?.id
+
+    // The identity actions (DM / New Group / Note to Self) run as: the fixed
+    // one, else the only sensible default. Reached with From empty only via
+    // raw-DID / scanned recipients.
+    val actionAccountId: String? = activeAccountId ?: accounts.firstOrNull()?.id
 
     val activeAccountServers: List<ServerInfo> = run {
         val id = activeAccountId ?: return@run emptyList()
@@ -135,38 +152,47 @@ fun ComposeMessageView(
     }
     val activeServer: ServerInfo? = activeAccountServers.firstOrNull()
 
-    // Helper: contact name resolution via ViewModel
-    fun contactName(c: ContactRowFfi): String {
-        val id = activeAccountId ?: return if (c.displayName.isEmpty()) "Unknown" else c.displayName
-        return viewModel.resolvedName(did = c.did, accountId = id)
+    // Helper: contact name resolution via ViewModel. Resolution runs against
+    // the identity that knows the contact (its tag), not the acting identity.
+    fun contactName(c: AppViewModel.AccountContact): String {
+        return viewModel.resolvedName(did = c.row.did, accountId = c.accountId)
     }
 
-    fun isBot(c: ContactRowFfi): Boolean {
-        val id = activeAccountId ?: return false
-        return viewModel.isBot(did = c.did, accountId = id)
+    fun isBot(c: AppViewModel.AccountContact): Boolean {
+        return viewModel.isBot(did = c.row.did, accountId = c.accountId)
     }
 
-    // Filtered contact lists mirroring Swift computed vars
+    // Filtered contact lists mirroring Swift computed vars. The list is the
+    // *merged* book across all identities (docs/52 unified-at-query).
     val trimmedQuery = query.trim()
     val queryLooksLikeDid = trimmedQuery.startsWith("did:")
 
-    val peopleResults: List<ContactRowFfi> = run {
+    // Once an acting identity is fixed (either direction), the book filters to
+    // contacts that identity knows — groups/DMs are server-local until
+    // federation, so offering another identity's contacts would build a
+    // cross-server group that can't work. While From is empty: everything.
+    val reachableContacts: List<AppViewModel.AccountContact> = run {
+        val acting = activeAccountId ?: return@run allContacts
+        allContacts.filter { it.accountIds.contains(acting) }
+    }
+
+    val peopleResults: List<AppViewModel.AccountContact> = run {
         val q = trimmedQuery.lowercase()
-        allContacts.filter { c ->
-            if (!c.isCurated) return@filter false
-            if (chips.any { it.did == c.did }) return@filter false
+        reachableContacts.filter { c ->
+            if (!c.row.isCurated) return@filter false
+            if (chips.any { it.did == c.row.did }) return@filter false
             if (q.isEmpty()) return@filter true
-            c.displayName.lowercase().contains(q) || c.did.lowercase().contains(q)
+            c.row.displayName.lowercase().contains(q) || c.row.did.lowercase().contains(q)
         }
     }
 
-    val otherResults: List<ContactRowFfi> = run {
+    val otherResults: List<AppViewModel.AccountContact> = run {
         val q = trimmedQuery.lowercase()
-        allContacts.filter { c ->
-            if (c.isCurated) return@filter false
-            if (chips.any { it.did == c.did }) return@filter false
+        reachableContacts.filter { c ->
+            if (c.row.isCurated) return@filter false
+            if (chips.any { it.did == c.row.did }) return@filter false
             if (q.isEmpty()) return@filter true
-            c.displayName.lowercase().contains(q) || c.did.lowercase().contains(q)
+            c.row.displayName.lowercase().contains(q) || c.row.did.lowercase().contains(q)
         }
     }
 
@@ -189,13 +215,12 @@ fun ComposeMessageView(
 
     val newGroupTitle: String = if (chips.isEmpty()) "New Empty Group" else "New Group (${chips.count()})"
 
-    // Load contacts when the active account changes
-    LaunchedEffect(activeAccountId) {
-        val id = activeAccountId ?: return@LaunchedEffect
-        val rows = viewModel.listContacts(accountId = id)
+    // Load the merged contact book once (re-merged if the account set changes).
+    LaunchedEffect(accounts) {
+        val rows = viewModel.listAllContacts()
         allContacts = rows
         for (c in rows) {
-            viewModel.cacheDisplayName(name = c.displayName, did = c.did)
+            viewModel.cacheDisplayName(name = c.row.displayName, did = c.row.did)
         }
     }
 
@@ -214,20 +239,32 @@ fun ComposeMessageView(
         }
     }
 
+    // Adding a contact from the merged book: if From is still empty, the pick
+    // fills it with the contact's preferred identity — the identity that most
+    // recently talked to this person (docs/52) — and the book filters to what
+    // that identity can reach. Later picks never flip the identity; the From
+    // row remains the manual control (which filters the other way).
+    fun addContactChip(c: AppViewModel.AccountContact) {
+        if (activeAccountId == null) {
+            selectedAccountId = c.accountId
+        }
+        addChip(did = c.row.did, displayName = contactName(c))
+    }
+
     fun commitQueryAsChip() {
         if (queryLooksLikeDid) {
             addChip(did = trimmedQuery, displayName = "")
         } else {
             val first = peopleResults.firstOrNull() ?: otherResults.firstOrNull()
             if (first != null) {
-                addChip(did = first.did, displayName = contactName(first))
+                addContactChip(first)
             }
         }
     }
 
     fun dmTapped() {
         if (chips.size != 1) return
-        val accountId = activeAccountId ?: return
+        val accountId = actionAccountId ?: return
         val conv = viewModel.findOrCreateDMConversation(
             recipientDid = chips[0].did,
             accountId = accountId,
@@ -347,11 +384,11 @@ fun ComposeMessageView(
                             color = LocalAvalancheColors.current.muted,
                         )
                     }
-                    items(peopleResults, key = { it.did }) { c ->
+                    items(peopleResults, key = { it.row.did }) { c ->
                         ContactRowItem(
                             name = contactName(c),
                             isBot = isBot(c),
-                            onClick = { addChip(did = c.did, displayName = contactName(c)) },
+                            onClick = { addContactChip(c) },
                         )
                     }
                 }
@@ -366,11 +403,11 @@ fun ComposeMessageView(
                             color = LocalAvalancheColors.current.muted,
                         )
                     }
-                    items(otherResults, key = { it.did }) { c ->
+                    items(otherResults, key = { it.row.did }) { c ->
                         ContactRowItem(
                             name = contactName(c),
                             isBot = isBot(c),
-                            onClick = { addChip(did = c.did, displayName = contactName(c)) },
+                            onClick = { addContactChip(c) },
                         )
                     }
                 }
@@ -395,8 +432,9 @@ fun ComposeMessageView(
                 errorMessage = errorMessage,
                 onDmTapped = { dmTapped() },
                 onNewGroupTapped = {
-                    val id = activeAccountId ?: return@ActionBar
-                    onNavigateToNameGroup(chips.toList(), id, activeAccountServers)
+                    val id = actionAccountId ?: return@ActionBar
+                    val servers = accounts.firstOrNull { it.id == id }?.servers ?: emptyList()
+                    onNavigateToNameGroup(chips.toList(), id, servers)
                 },
             )
         }
@@ -405,12 +443,12 @@ fun ComposeMessageView(
     // Contact picker bottom sheet
     if (showingContactPicker) {
         ContactPickerSheet(
-            contacts = allContacts,
+            contacts = reachableContacts,
             excludedDids = chips.map { it.did }.toSet(),
             nameFor = { contactName(it) },
             isBotFor = { isBot(it) },
             onSelect = { c ->
-                addChip(did = c.did, displayName = contactName(c))
+                addContactChip(c)
                 showingContactPicker = false
             },
             onScanLink = { raw ->
@@ -437,7 +475,9 @@ private fun AccountPickerRow(
     selectedAccountId: String?,
     onAccountSelected: (String?) -> Unit,
 ) {
-    val selected = accounts.firstOrNull { it.id == selectedAccountId } ?: accounts.firstOrNull()
+    // No fallback: an empty From renders empty (with a placeholder) until the
+    // user picks an account — or until picking a contact fills it in.
+    val selected = accounts.firstOrNull { it.id == selectedAccountId }
     var expanded by remember { mutableStateOf(false) }
 
     Row(
@@ -457,6 +497,9 @@ private fun AccountPickerRow(
                 onValueChange = {},
                 readOnly = true,
                 singleLine = true,
+                placeholder = {
+                    Text("Choose account", color = LocalAvalancheColors.current.muted)
+                },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                 colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
                 modifier = Modifier
@@ -661,11 +704,11 @@ private fun ActionBar(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ContactPickerSheet(
-    contacts: List<ContactRowFfi>,
+    contacts: List<AppViewModel.AccountContact>,
     excludedDids: Set<String>,
-    nameFor: (ContactRowFfi) -> String,
-    isBotFor: (ContactRowFfi) -> Boolean,
-    onSelect: (ContactRowFfi) -> Unit,
+    nameFor: (AppViewModel.AccountContact) -> String,
+    isBotFor: (AppViewModel.AccountContact) -> Boolean,
+    onSelect: (AppViewModel.AccountContact) -> Unit,
     onScanLink: (String) -> Boolean,
     onDismiss: () -> Unit,
 ) {
@@ -674,16 +717,16 @@ private fun ContactPickerSheet(
     var showingScanner by remember { mutableStateOf(false) }
     var scanError by remember { mutableStateOf<String?>(null) }
 
-    val filtered: List<ContactRowFfi> = run {
+    val filtered: List<AppViewModel.AccountContact> = run {
         val q = search.trim().lowercase()
         contacts.filter { c ->
-            if (excludedDids.contains(c.did)) return@filter false
+            if (excludedDids.contains(c.row.did)) return@filter false
             if (q.isEmpty()) return@filter true
-            nameFor(c).lowercase().contains(q) || c.did.lowercase().contains(q)
+            nameFor(c).lowercase().contains(q) || c.row.did.lowercase().contains(q)
         }
     }
-    val people = filtered.filter { it.isCurated }
-    val other = filtered.filter { !it.isCurated }
+    val people = filtered.filter { it.row.isCurated }
+    val other = filtered.filter { !it.row.isCurated }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -753,7 +796,7 @@ private fun ContactPickerSheet(
                             color = LocalAvalancheColors.current.muted,
                         )
                     }
-                    items(people, key = { it.did }) { c ->
+                    items(people, key = { it.row.did }) { c ->
                         ContactRowItem(
                             name = nameFor(c),
                             isBot = isBotFor(c),
@@ -772,7 +815,7 @@ private fun ContactPickerSheet(
                             color = LocalAvalancheColors.current.muted,
                         )
                     }
-                    items(other, key = { it.did }) { c ->
+                    items(other, key = { it.row.did }) { c ->
                         ContactRowItem(
                             name = nameFor(c),
                             isBot = isBotFor(c),

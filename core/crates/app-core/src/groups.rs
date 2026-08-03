@@ -651,7 +651,20 @@ async fn prime_member_profiles(
     members: &[gproto::Member],
 ) {
     for m in members {
-        if m.did == self_did || m.profile_key.len() != crate::profile::PROFILE_KEY_LEN {
+        if m.did == self_did {
+            continue;
+        }
+        // Group co-membership creates a contact row if missing (docs/52 §"What
+        // changes a row"): non-curated (co-members are not auto-curated — they
+        // appear in compose's "Other" section / search, not the People list),
+        // and with a zero interaction timestamp so mere co-membership never
+        // outranks a real conversation in recency. `touch_contact` upserts
+        // with MAX semantics, so an existing row is untouched.
+        let _ = store
+            .identity
+            .touch_contact(&m.did, false, types::Timestamp(0))
+            .await;
+        if m.profile_key.len() != crate::profile::PROFILE_KEY_LEN {
             continue;
         }
         // Skip if we already hold this exact key (the name is cached with it).

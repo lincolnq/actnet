@@ -2226,6 +2226,57 @@ class AppViewModel(
     }
 
     /**
+     * A merged contact-book row. [accountId] is the *preferred* identity (the
+     * one with the most recent interaction); [accountIds] is every identity
+     * that knows this DID, so callers can check reachability once an acting
+     * identity is fixed (groups/DMs are server-local until federation).
+     */
+    data class AccountContact(
+        val accountId: String,
+        val row: ContactRowFfi,
+        val accountIds: Set<String> = setOf(accountId),
+    )
+
+    /**
+     * The merged contact book across every signed-in identity — contact
+     * unification at *query* time (docs/52's unified book is deliberately not
+     * a storage change yet). Rows are deduped by DID; when more than one
+     * identity knows a DID, the one with the most recent interaction wins and
+     * becomes the row's account tag — i.e. a computed `preferred_identity`
+     * ("the identity I actually talk to this person with"), with curation
+     * OR-ed across identities so a contact curated anywhere sections as
+     * People.
+     */
+    suspend fun listAllContacts(): List<AccountContact> {
+        val perAccount = _accounts.value.mapNotNull { acct ->
+            val core = cores[acct.id]
+            if (core == null) {
+                AppLog.warn("contacts", "merged book: no core for ${acct.id} (offline/login failed?)")
+                return@mapNotNull null
+            }
+            val rows = withContext(Dispatchers.IO) {
+                runCatching { core.listContacts() }
+                    .onFailure { AppLog.warn("contacts", "merged book: listContacts failed for ${acct.id}: ${it.message}") }
+                    .getOrElse { emptyList() }
+            }
+            AppLog.info("contacts", "merged book: ${acct.id} -> ${rows.size} rows")
+            acct.id to rows
+        }
+        return perAccount
+            .flatMap { (accountId, rows) -> rows.map { AccountContact(accountId, it) } }
+            .groupBy { it.row.did }
+            .map { (_, entries) ->
+                val best = entries.maxBy { it.row.lastInteractionAtMs }
+                val curatedAnywhere = entries.any { it.row.isCurated }
+                best.copy(
+                    row = best.row.copy(isCurated = curatedAnywhere),
+                    accountIds = entries.map { it.accountId }.toSet(),
+                )
+            }
+            .sortedByDescending { it.row.lastInteractionAtMs }
+    }
+
+    /**
      * Save a received shared contact card (docs/35) to the local contact book.
      * Curates the DID and records the shared name as the local nickname; the
      * person's real profile arrives on first contact via the DID. Updates the
