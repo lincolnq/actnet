@@ -1,10 +1,12 @@
 package net.theavalanche.app
 
+import android.graphics.BitmapFactory
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -52,6 +55,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -123,12 +128,21 @@ fun ChatsView(
     // TODO(opus): hasRecoveryKey — check via Rust core once the FFI method exists.
     val hasRecoveryKey = false
 
+    // Per-account unread totals for the tab badges: the sum of unread counts
+    // across every conversation homed in that account's tab.
+    val unreadByAccount = accounts.associate { acct ->
+        acct.id to sortedConversations
+            .filter { it.accountId == acct.id }
+            .sumOf { viewModel.unreadCount(it) }
+    }
+
     Scaffold(
         topBar = {
             ChatsHeader(
                 accounts = accounts,
                 showsAccountTabs = showsAccountTabs,
                 selectedAccountTab = selectedAccountTab,
+                unreadByAccount = unreadByAccount,
                 onSelectAccountTab = { viewModel.setSelectedAccountTab(it) },
                 onOpenCompose = onOpenCompose,
             )
@@ -216,6 +230,7 @@ fun ChatsView(
                                 unreadCount = unreadCount,
                                 isBotConversation = isBot,
                                 previewText = conversationPreviewText(viewModel, conversation),
+                                avatarData = conversationAvatar(viewModel, conversation),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .chatRowPressHighlight { onOpenConversation(conversation) }
@@ -247,6 +262,7 @@ private fun ChatsHeader(
     accounts: List<Account>,
     showsAccountTabs: Boolean,
     selectedAccountTab: String?,
+    unreadByAccount: Map<String, Int>,
     onSelectAccountTab: (String) -> Unit,
     onOpenCompose: () -> Unit,
 ) {
@@ -289,6 +305,7 @@ private fun ChatsHeader(
                             AccountTab(
                                 account = account,
                                 selected = selectedAccountTab == account.id,
+                                unreadCount = unreadByAccount[account.id] ?: 0,
                                 onClick = { onSelectAccountTab(account.id) },
                                 onLabelWidth = { labelWidths[account.id] = it },
                             )
@@ -357,6 +374,9 @@ private fun ChatsHeader(
 private fun AccountTab(
     account: Account,
     selected: Boolean,
+    // Total unread messages across this account's conversations — rendered as
+    // a notification badge on the avatar (matches the row badge style).
+    unreadCount: Int = 0,
     onClick: () -> Unit,
     // Reports the measured width of the label text, so the strip can size its
     // sliding indicator pill to match.
@@ -403,24 +423,60 @@ private fun AccountTab(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
-        Box(
-            modifier = Modifier
-                .size(30.dp)
-                .alpha(avatarAlpha)
-                .scale(avatarScale)
-                .background(
-                    color = LocalAvalancheColors.current.card,
-                    shape = CircleShape,
+        // The identity's avatar photo when set (docs/55); monogram fallback.
+        val avatarBitmap = remember(account.avatarData) {
+            account.avatarData?.let { bytes ->
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }
+        }
+        Box {
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .alpha(avatarAlpha)
+                    .scale(avatarScale)
+                    .background(
+                        color = LocalAvalancheColors.current.card,
+                        shape = CircleShape,
+                    )
+                    .clip(CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (avatarBitmap != null) {
+                    Image(
+                        bitmap = avatarBitmap,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    Text(
+                        text = label.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = LocalAvalancheColors.current.brand,
+                    )
+                }
+            }
+            // Unread badge — sum across the tab's conversations, same
+            // notification/white style as the row badge, riding the avatar's
+            // top-trailing corner.
+            if (unreadCount > 0) {
+                Text(
+                    text = "$unreadCount",
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 9.dp, y = (-4).dp)
+                        .background(
+                            color = LocalAvalancheColors.current.notification,
+                            shape = RoundedCornerShape(percent = 50),
+                        )
+                        .padding(horizontal = 4.dp, vertical = 1.dp),
                 )
-                .clip(CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = label.firstOrNull()?.uppercaseChar()?.toString() ?: "?",
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = LocalAvalancheColors.current.brand,
-            )
+            }
         }
         Text(
             text = label,
@@ -470,6 +526,22 @@ fun Modifier.chatRowPressHighlight(onClick: () -> Unit): Modifier {
             indication = null,
             onClick = onClick,
         )
+}
+
+/**
+ * The avatar photo for a conversation row (docs/55): the group avatar for
+ * groups, the peer's avatar for DMs. `null` (placeholder) while unresolved.
+ * Mirrors iOS ConversationRow.avatarData. Computed live (not `remember`d) so
+ * the snapshot-backed cache read is tracked — the row recomposes when the
+ * avatar resolves.
+ */
+@Composable
+fun conversationAvatar(viewModel: AppViewModel, conversation: Conversation): ByteArray? {
+    return if (conversation.isGroup) {
+        conversation.groupId?.let { viewModel.groupAvatar(it, conversation.accountId) }
+    } else {
+        conversation.recipientDid?.let { viewModel.avatar(it, conversation.accountId) }
+    }
 }
 
 /**

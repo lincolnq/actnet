@@ -1,5 +1,7 @@
 package net.theavalanche.app
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,10 +22,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -59,6 +64,9 @@ fun ConversationRow(
     // Off by default: organization (per-account tabs) now disambiguates which
     // identity a conversation belongs to, replacing per-row marking (docs/37).
     showsAccountBadge: Boolean = false,
+    /** Avatar photo bytes (docs/55): the group avatar for groups, the peer's
+     *  for DMs. `null` falls back to the icon placeholder. */
+    avatarData: ByteArray? = null,
 ) {
     Row(
         modifier = Modifier
@@ -70,24 +78,43 @@ fun ConversationRow(
         // Avatar placeholder — hexagon frame for bot DMs, circle for everyone else.
         val avatarShape = if (isBotConversation) Hexagon() else CircleShape
 
-        // Soft brand tint rather than `card`: the rows are now `card` too, so a
-        // `card` placeholder would vanish into the row (docs/37).
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .background(
-                    color = LocalAvalancheColors.current.brand.copy(alpha = 0.15f),
-                    shape = avatarShape,
-                )
-                .clip(avatarShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = if (conversation.isGroup) Icons.Filled.Group else Icons.Filled.Person,
+        // Avatar photo when set (docs/55); otherwise the placeholder. Soft
+        // brand tint rather than `card`: the rows are now `card` too, so a
+        // `card` placeholder would vanish into the row (docs/37). The decoded
+        // bitmap is remembered per byte-array identity so scrolling doesn't
+        // re-decode every frame.
+        val avatarBitmap = remember(avatarData) {
+            avatarData?.let { bytes ->
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }
+        }
+        if (avatarBitmap != null) {
+            Image(
+                bitmap = avatarBitmap,
                 contentDescription = null,
-                tint = LocalAvalancheColors.current.brand,
-                modifier = Modifier.size(24.dp),
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(avatarShape),
             )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .background(
+                        color = LocalAvalancheColors.current.brand.copy(alpha = 0.15f),
+                        shape = avatarShape,
+                    )
+                    .clip(avatarShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = if (conversation.isGroup) Icons.Filled.Group else Icons.Filled.Person,
+                    contentDescription = null,
+                    tint = LocalAvalancheColors.current.brand,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
         }
 
         Spacer(modifier = Modifier.width(12.dp))

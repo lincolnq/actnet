@@ -294,6 +294,25 @@ class AppViewModel(
      */
     private val isBotCache: MutableMap<String, Boolean> = mutableStateMapOf()
 
+    /**
+     * Avatar bytes per contact DID (docs/55), resolved lazily like display
+     * names. Snapshot-backed so a row recomposes when its avatar lands.
+     * Mirrors iOS `@Published avatarCache`.
+     */
+    private val avatarCache: MutableMap<String, ByteArray> = mutableStateMapOf()
+
+    /** Group avatar bytes, keyed by URL-safe-no-pad base64 group_id. */
+    private val groupAvatarCache: MutableMap<String, ByteArray> = mutableStateMapOf()
+
+    /** DIDs / group ids with an avatar fetch in flight (dedupe). */
+    private val avatarInFlight: MutableSet<String> = mutableSetOf()
+
+    /**
+     * DIDs / group ids that resolved to no avatar this session — suppresses
+     * re-spawning a resolve task on every re-render.
+     */
+    private val unresolvedAvatars: MutableSet<String> = mutableSetOf()
+
     /** Cached group titles, keyed by URL-safe-no-pad base64 group_id. */
     private val groupTitleCache: MutableMap<String, String> = mutableMapOf()
 
@@ -584,6 +603,18 @@ class AppViewModel(
             // for this account anyway.
             cores[p.did] = core
 
+            // Load the account's own avatar from the local store (docs/55) —
+            // drives the account-tab icon. Mirrors iOS restore.
+            val ownAvatar = withContext(Dispatchers.IO) {
+                runCatching { core.ownAvatar() }.getOrNull()
+            }
+            if (ownAvatar != null && ownAvatar.isNotEmpty()) {
+                _accounts.update { list ->
+                    list.map { if (it.id == p.did) it.copy(avatarData = ownAvatar) else it }
+                }
+                avatarCache[p.did] = ownAvatar
+            }
+
             // Refresh display name from the local profile store — persisted name can be stale.
             val coreName = withContext(Dispatchers.IO) {
                 runCatching { core.ownDisplayName() }.getOrElse { "" }
@@ -647,6 +678,10 @@ class AppViewModel(
         displayNameInFlight.clear()
         unresolvedDids.clear()
         isBotCache.clear()
+        avatarCache.clear()
+        groupAvatarCache.clear()
+        avatarInFlight.clear()
+        unresolvedAvatars.clear()
         clearPersistedAccounts()
         _conversationsLoaded.value = false
         _isOnboarding.value = true
@@ -667,6 +702,10 @@ class AppViewModel(
         displayNameInFlight.clear()
         unresolvedDids.clear()
         isBotCache.clear()
+        avatarCache.clear()
+        groupAvatarCache.clear()
+        avatarInFlight.clear()
+        unresolvedAvatars.clear()
         clearPersistedAccounts()
         _conversationsLoaded.value = false
         _isOnboarding.value = true
@@ -1221,6 +1260,69 @@ class AppViewModel(
                 unresolvedDids.add(did)
             } else {
                 applyResolvedDisplayName(did = did, name = resolved)
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Avatars (docs/55) — mirrors iOS AppState.avatar(for:accountId:) etc.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Avatar bytes to render for a DID (own account or contact), or `null`
+     * while it resolves / if none. Own avatars live on the [Account] model;
+     * contact avatars come from the local cache, resolved lazily (mirrors
+     * [displayName]).
+     */
+    fun avatar(did: String, accountId: String): ByteArray? {
+        _accounts.value.firstOrNull { it.id == did }?.let { return it.avatarData }
+        avatarCache[did]?.let { return it }
+        resolveAvatar(did = did, accountId = accountId)
+        return null
+    }
+
+    private fun resolveAvatar(did: String, accountId: String) {
+        if (avatarInFlight.contains(did) || unresolvedAvatars.contains(did)) return
+        val core = cores[accountId] ?: return
+        avatarInFlight.add(did)
+        viewModelScope.launch {
+            val data = withContext(Dispatchers.IO) {
+                runCatching { core.contactAvatar(did = did) }.getOrNull()
+            }
+            avatarInFlight.remove(did)
+            if (data != null && data.isNotEmpty()) {
+                avatarCache[did] = data
+            } else {
+                unresolvedAvatars.add(did)
+            }
+        }
+    }
+
+    /**
+     * Group avatar bytes to render, or `null` while it resolves / if none.
+     * Resolution also pulls a fresh copy from the server when the local cache
+     * is behind the group state's version (`fetchGroupAvatar`).
+     */
+    fun groupAvatar(groupId: String, accountId: String): ByteArray? {
+        groupAvatarCache[groupId]?.let { return it }
+        resolveGroupAvatar(groupId = groupId, accountId = accountId)
+        return null
+    }
+
+    private fun resolveGroupAvatar(groupId: String, accountId: String) {
+        if (avatarInFlight.contains(groupId) || unresolvedAvatars.contains(groupId)) return
+        val core = cores[accountId] ?: return
+        avatarInFlight.add(groupId)
+        viewModelScope.launch {
+            val data = withContext(Dispatchers.IO) {
+                runCatching { core.fetchGroupAvatar(groupId = groupId) }
+                runCatching { core.groupAvatar(groupId = groupId) }.getOrNull()
+            }
+            avatarInFlight.remove(groupId)
+            if (data != null && data.isNotEmpty()) {
+                groupAvatarCache[groupId] = data
+            } else {
+                unresolvedAvatars.add(groupId)
             }
         }
     }

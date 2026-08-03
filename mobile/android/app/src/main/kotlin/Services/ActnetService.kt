@@ -178,6 +178,13 @@ interface AppCoreProtocol {
     @Throws(AppErrorFfi::class) fun refreshContactProfile(did: String): Boolean
     @Throws(AppErrorFfi::class) fun primeContactProfile(did: String, displayName: String, profileKey: ByteArray)
     @Throws(AppErrorFfi::class) fun listContacts(): List<ContactRowFfi>
+    // ---- Avatars (docs/55) — read side; set/clear come with the profile UI ----
+    @Throws(AppErrorFfi::class) fun ownAvatar(): ByteArray?
+    @Throws(AppErrorFfi::class) fun contactAvatar(did: String): ByteArray?
+    @Throws(AppErrorFfi::class) fun groupAvatar(groupId: String): ByteArray?
+    /** Pull a fresh group avatar from the server if the local copy is behind;
+     *  returns true if anything changed. Follow with [groupAvatar] to read. */
+    @Throws(AppErrorFfi::class) fun fetchGroupAvatar(groupId: String): Boolean
     @Throws(AppErrorFfi::class) fun touchContact(did: String, curated: Boolean)
     /** Save a received shared contact card (docs/35): curate the DID and record
      *  the shared name as the local nickname. The real profile arrives on first
@@ -385,6 +392,10 @@ class LiveAppCoreProtocol(private val core: AppCore) : AppCoreProtocol {
     override fun primeContactProfile(did: String, displayName: String, profileKey: ByteArray) =
         core.primeContactProfile(did, displayName, profileKey)
     override fun listContacts(): List<ContactRowFfi> = core.listContacts()
+    override fun ownAvatar(): ByteArray? = core.ownAvatar()
+    override fun contactAvatar(did: String): ByteArray? = core.contactAvatar(did)
+    override fun groupAvatar(groupId: String): ByteArray? = core.groupAvatar(groupId)
+    override fun fetchGroupAvatar(groupId: String): Boolean = core.fetchGroupAvatar(groupId)
     override fun touchContact(did: String, curated: Boolean) = core.touchContact(did, curated)
     override fun saveSharedContact(did: String, name: String) = core.saveSharedContact(did, name)
 
@@ -613,6 +624,10 @@ open class MockAppCoreProtocol : AppCoreProtocol {
     override fun refreshContactProfile(did: String): Boolean = false
     override fun primeContactProfile(did: String, displayName: String, profileKey: ByteArray) {}
     override fun listContacts(): List<ContactRowFfi> = emptyList()
+    override fun ownAvatar(): ByteArray? = null
+    override fun contactAvatar(did: String): ByteArray? = null
+    override fun groupAvatar(groupId: String): ByteArray? = null
+    override fun fetchGroupAvatar(groupId: String): Boolean = false
     override fun touchContact(did: String, curated: Boolean) {}
     override fun saveSharedContact(did: String, name: String) {}
 

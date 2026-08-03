@@ -104,6 +104,7 @@ fun ConversationSearchView(
                     unreadCount = viewModel.unreadCount(conversation),
                     isBotConversation = isBot,
                     previewText = conversationPreviewText(viewModel, conversation),
+                    avatarData = conversationAvatar(viewModel, conversation),
                     modifier = Modifier
                         .fillMaxWidth()
                         .chatRowPressHighlight { onOpenConversation(conversation) }
