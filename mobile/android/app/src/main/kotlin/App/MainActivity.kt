@@ -110,10 +110,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Fully transparent system navigation bar so the app's background shows
-        // through it edge-to-edge. `light` selects dark back/home icons for our
-        // light (Paper) UI; the transparent scrims keep it clear on every API.
+        // through it edge-to-edge. `auto` picks the back/home icon contrast from
+        // the system light/dark setting (dark icons on Paper, light icons on the
+        // dark plum surfaces); the transparent scrims keep it clear on every API.
         enableEdgeToEdge(
-            navigationBarStyle = SystemBarStyle.light(
+            navigationBarStyle = SystemBarStyle.auto(
                 android.graphics.Color.TRANSPARENT,
                 android.graphics.Color.TRANSPARENT,
             ),
