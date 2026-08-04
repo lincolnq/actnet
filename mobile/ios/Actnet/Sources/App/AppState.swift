@@ -43,6 +43,14 @@ final class AppState: ObservableObject {
     @Published var reactionsByConversation: [String: [ReactionFfi]] = [:]
     @Published var serviceMode: ServiceMode
     @Published var selectedTab: Tab = .chats
+    /// The account (identity) tab selected in the Chats header strip, or nil
+    /// when never explicitly chosen. Held here (not view-local @State) so the
+    /// choice survives navigation and the effective tab can be derived
+    /// synchronously on first render — no unfiltered flash at cold launch.
+    /// Views resolve the *effective* tab as: this value if it names a live
+    /// account, else the first account. Mirrors Android's
+    /// `AppViewModel.selectedAccountTab`.
+    @Published var selectedChatsAccountTab: String?
     @Published var navigateToConversation: Conversation?
     /// An image shared into the app from another app (docs/35), awaiting a
     /// destination chat. Non-nil drives the share-destination picker in RootView.
@@ -407,6 +415,7 @@ final class AppState: ObservableObject {
         displayNameInFlight.removeAll()
         unresolvedDids.removeAll()
         isBotCache.removeAll()
+        selectedChatsAccountTab = nil
         Self.clearPersistedAccounts()
         isOnboarding = true
     }
@@ -428,6 +437,7 @@ final class AppState: ObservableObject {
         displayNameInFlight.removeAll()
         unresolvedDids.removeAll()
         isBotCache.removeAll()
+        selectedChatsAccountTab = nil
         Self.clearPersistedAccounts()
         isOnboarding = true
     }
@@ -1952,6 +1962,44 @@ final class AppState: ObservableObject {
         return await Task.detached {
             (try? core.listContacts()) ?? []
         }.value
+    }
+
+    /// A merged contact-book row. `accountId` is the *preferred* identity (the
+    /// one with the most recent interaction); `accountIds` is every identity
+    /// that knows this DID, so callers can check reachability once an acting
+    /// identity is fixed (groups/DMs are server-local until federation).
+    struct AccountContact: Identifiable {
+        let accountId: String
+        var row: ContactRowFfi
+        var accountIds: Set<String>
+        var id: String { row.did }
+    }
+
+    /// The merged contact book across every signed-in identity — contact
+    /// unification at *query* time (docs/52's unified book is deliberately not
+    /// a storage change yet). Rows are deduped by DID; when more than one
+    /// identity knows a DID, the one with the most recent interaction wins and
+    /// becomes the row's account tag — i.e. a computed `preferred_identity`
+    /// ("the identity I actually talk to this person with"), with curation
+    /// OR-ed across identities so a contact curated anywhere sections as
+    /// People. Mirrors Android `AppViewModel.listAllContacts`.
+    func listAllContacts() async -> [AccountContact] {
+        var entries: [AccountContact] = []
+        for account in accounts {
+            let rows = await listContacts(accountId: account.id)
+            entries += rows.map {
+                AccountContact(accountId: account.id, row: $0, accountIds: [account.id])
+            }
+        }
+        return Dictionary(grouping: entries, by: { $0.row.did })
+            .values
+            .map { group in
+                var best = group.max { $0.row.lastInteractionAtMs < $1.row.lastInteractionAtMs }!
+                best.row.isCurated = group.contains { $0.row.isCurated }
+                best.accountIds = Set(group.map(\.accountId))
+                return best
+            }
+            .sorted { $0.row.lastInteractionAtMs > $1.row.lastInteractionAtMs }
     }
 
     func pollMessages(for accountId: String) async throws -> [DecryptedMessage] {

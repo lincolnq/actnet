@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="25px" height="25px" viewBox="0 0 256 256" version="1.1" xmlns="http://www.w3.org/2000/svg">
+    <title>Network Globe</title>
+    <g id="Network-Globe" stroke="#6B3E50" fill="none" fill-rule="evenodd">
+        <!-- globe -->
+        <circle cx="128" cy="102" r="90" stroke-width="18"></circle>
+        <!-- meridians -->
+        <path d="M 128,12 L 128,192" stroke-width="12"></path>
+        <ellipse cx="128" cy="102" rx="44" ry="90" stroke-width="12"></ellipse>
+        <!-- latitudes -->
+        <path d="M 52,58 L 204,58 M 52,146 L 204,146" stroke-width="6"></path>
+        <!-- stem down to node -->
+        <path d="M 128,192 L 128,218" stroke-width="12"></path>
+        <!-- node (open ring) -->
+        <circle cx="128" cy="229" r="15" stroke-width="12"></circle>
+        <!-- horizontal rule, broken by the node -->
+        <path d="M 37,229 L 89,229 M 167,229 L 219,229" stroke-width="16" stroke-linecap="round"></path>
+    </g>
+</svg>

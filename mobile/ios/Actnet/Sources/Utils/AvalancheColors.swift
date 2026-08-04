@@ -46,7 +46,9 @@ extension Color {
     static let avBrand          = avDynamic(light: .plum500,  dark: .plum200)
     static let avPaper          = avDynamic(light: .sand100,  dark: .plum900)
     static let avInk            = avDynamic(light: .sand900,  dark: .sand50)
-    static let avMuted          = avDynamic(light: .sand600,  dark: .sand300)
+    // Dark uses sand400, not sand300: sand300 is nearly the same lightness as
+    // ink (sand50) on dark surfaces, so "muted" text read as primary text.
+    static let avMuted          = avDynamic(light: .sand600,  dark: .sand400)
     static let avOutgoingBubble = Color.plum500 // always on plum; stands out in both modes
     static let avIncomingBubble = avDynamic(light: .sand200,  dark: .plum800)
     /// Inset cards, field backings, and avatar placeholders.

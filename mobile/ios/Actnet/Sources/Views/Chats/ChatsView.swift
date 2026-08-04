@@ -4,13 +4,24 @@ struct ChatsView: View {
     @EnvironmentObject var appState: AppState
     @State private var showCompose = false
     @State private var navigationPath = NavigationPath()
-    /// The account (identity) whose conversations are shown, when the user has
-    /// more than one account and the tab strip is visible. `nil` = not yet
-    /// resolved / single-account (unified list). See `docs/37-chat-organization.md`.
-    @State private var selectedAccountTab: String?
     /// Namespace for the selection ring so it animates *between* avatars
     /// (a single moving indicator) rather than fading in/out per tab.
     @Namespace private var tabNamespace
+
+    /// The account (identity) whose conversations are shown, when the user has
+    /// more than one account and the tab strip is visible. Selection lives in
+    /// AppState (survives navigation); the *effective* value is derived
+    /// synchronously — explicit choice if it names a live account, else the
+    /// first account — so the first render is already filtered (no unfiltered
+    /// flash at cold launch). See `docs/37-chat-organization.md`.
+    private var selectedAccountTab: String? {
+        guard showsAccountTabs else { return nil }
+        if let sel = appState.selectedChatsAccountTab,
+           appState.accounts.contains(where: { $0.id == sel }) {
+            return sel
+        }
+        return appState.accounts.first?.id
+    }
 
     /// Whether the per-account tab strip is shown at all. Progressive disclosure:
     /// a single-account user sees a plain unified inbox (Signal baseline, `37`).
@@ -51,8 +62,6 @@ struct ChatsView: View {
             .sheet(isPresented: $showCompose) {
                 ComposeMessageView()
             }
-            .onAppear(perform: resolveSelectedTab)
-            .onChange(of: appState.accounts) { resolveSelectedTab() }
             .onChange(of: appState.navigateToConversation) {
                 guard let conv = appState.navigateToConversation else { return }
                 appState.navigateToConversation = nil
@@ -112,14 +121,14 @@ struct ChatsView: View {
                         .allowsHitTesting(false)
                 }
             }
-            .animation(.easeOut(duration: 0.13), value: selectedAccountTab)
+            .animation(.easeOut(duration: 0.13), value: appState.selectedChatsAccountTab)
         }
     }
 
     private func accountTab(_ account: Account) -> some View {
         let selected = selectedAccountTab == account.id
         return Button {
-            selectedAccountTab = account.id
+            appState.selectedChatsAccountTab = account.id
         } label: {
             VStack(spacing: 5) {
                 accountIcon(account, selected: selected)
@@ -152,6 +161,30 @@ struct ChatsView: View {
             // source; the single follower ring in the strip overlay matches
             // whichever one is selected.
             .matchedGeometryEffect(id: account.id, in: tabNamespace, isSource: true)
+            // Unread badge — sum across the tab's conversations, same
+            // notification/white style as the row badge, riding the avatar's
+            // top-trailing corner.
+            .overlay(alignment: .topTrailing) {
+                let unread = unreadCount(for: account)
+                if unread > 0 {
+                    Text("\(unread)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Color.avNotification, in: Capsule())
+                        .offset(x: 9, y: -4)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+
+    /// Total unread messages across this account's conversations — rendered
+    /// as a notification badge on the tab avatar (matches the row badge style).
+    private func unreadCount(for account: Account) -> Int {
+        appState.conversations
+            .filter { $0.accountId == account.id }
+            .reduce(0) { $0 + appState.unreadCount(for: $1) }
     }
 
     @ViewBuilder
@@ -231,16 +264,6 @@ struct ChatsView: View {
     private func accountLabel(_ account: Account) -> String {
         if !account.displayName.isEmpty { return account.displayName }
         return account.servers.first?.displayHost ?? "Account"
-    }
-
-    /// Keep `selectedAccountTab` valid as accounts change: default to the first
-    /// account, and reset if the selected one disappeared.
-    private func resolveSelectedTab() {
-        guard showsAccountTabs else { return }
-        if let sel = selectedAccountTab, appState.accounts.contains(where: { $0.id == sel }) {
-            return
-        }
-        selectedAccountTab = appState.accounts.first?.id
     }
 
     private var hasRecoveryKey: Bool {

@@ -206,30 +206,52 @@ final class RecipientTokenTextView: UITextView {
         becomeFirstResponder()
     }
 
+    /// One fixed line height for every state — empty, typed text, and chip
+    /// lines: the chip pill's height. Pills then never inflate their line, all
+    /// lines are equal, and the To:/placeholder labels never shift as content
+    /// changes (this was the "To label moves on the first keystroke" bug —
+    /// the labels were centered in the *measured* first-line fragment, which
+    /// differs between the empty and non-empty states). Mirrors the Android
+    /// token field's reserved fixed line height. A bonus: the native selection
+    /// rect over a selected chip is exactly pill-height, so it hugs the pill.
+    var fixedLineHeight: CGFloat {
+        ChipAttachment.pillHeight(for: font ?? .preferredFont(forTextStyle: .body))
+    }
+
+    private var fixedParagraphStyle: NSParagraphStyle {
+        let ps = NSMutableParagraphStyle()
+        ps.minimumLineHeight = fixedLineHeight
+        ps.maximumLineHeight = fixedLineHeight
+        return ps
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
 
         let prefixSize = prefixLabel.intrinsicContentSize
         let prefixWidth = prefixText.isEmpty ? 0 : prefixSize.width + prefixGap
-        let lineHeight = font?.lineHeight ?? 20
 
         // Carve a first-line-only column out of the left for the prefix. Height
-        // is one (minimum) line, so it intersects only the first line fragment;
+        // is one (fixed) line, so it intersects only the first line fragment;
         // wrapped lines below it use the full width.
         if prefixWidth != appliedPrefixWidth {
             appliedPrefixWidth = prefixWidth
             textContainer.exclusionPaths = prefixWidth > 0
-                ? [UIBezierPath(rect: CGRect(x: 0, y: 0, width: prefixWidth, height: lineHeight))]
+                ? [UIBezierPath(rect: CGRect(x: 0, y: 0, width: prefixWidth, height: fixedLineHeight))]
                 : []
         }
 
-        // Vertically center the prefix within the (possibly taller) first line.
-        let firstLineHeight = textStorage.length > 0
-            ? layoutManager.lineFragmentRect(forGlyphAt: 0, effectiveRange: nil).height
-            : lineHeight
+        // Center the labels on the first line's actual caret line — identical
+        // in every state now that the line height is fixed, and robust to how
+        // TextKit places the baseline within the fixed-height fragment.
+        let caret = caretRect(for: beginningOfDocument)
+        let lineMidY = caret.height.isFinite && caret.height > 0
+            ? caret.midY
+            : textContainerInset.top + fixedLineHeight / 2
+
         prefixLabel.frame = CGRect(
             x: 0,
-            y: textContainerInset.top + max(0, (firstLineHeight - prefixSize.height) / 2),
+            y: lineMidY - prefixSize.height / 2,
             width: prefixSize.width,
             height: prefixSize.height
         )
@@ -238,7 +260,7 @@ final class RecipientTokenTextView: UITextView {
         let plHeight = placeholderLabel.intrinsicContentSize.height
         placeholderLabel.frame = CGRect(
             x: prefixWidth,
-            y: textContainerInset.top + max(0, (firstLineHeight - plHeight) / 2),
+            y: lineMidY - plHeight / 2,
             width: max(0, bounds.width - prefixWidth - textContainerInset.right),
             height: plHeight
         )
@@ -339,7 +361,8 @@ final class RecipientTokenTextView: UITextView {
 
     private var defaultTypingAttributes: [NSAttributedString.Key: Any] {
         [.font: font ?? .preferredFont(forTextStyle: .body),
-         .foregroundColor: textColor ?? .label]
+         .foregroundColor: textColor ?? .label,
+         .paragraphStyle: fixedParagraphStyle]
     }
 
     private func attributedChip(_ chip: ComposeMessageView.Chip) -> NSAttributedString {
@@ -347,11 +370,14 @@ final class RecipientTokenTextView: UITextView {
         let attachment = ChipAttachment(chip: chip, label: chip.label, font: f)
         attachment.textView = self
         let image = attachment.image ?? UIImage()
-        // Center the pill on the line (its bottom sits below the baseline).
-        let yOffset = ((f.capHeight - image.size.height) / 2).rounded()
+        // Sit the pill flush within the fixed-height line box: its bottom at
+        // the descender line, its top at the line top (pill height == line
+        // height). It never inflates the line.
+        let yOffset = (f.descender + (fixedLineHeight - image.size.height) / 2).rounded()
         attachment.bounds = CGRect(origin: CGPoint(x: 0, y: yOffset), size: image.size)
         let s = NSMutableAttributedString(attachment: attachment)
         s.addAttribute(.font, value: f, range: NSRange(location: 0, length: s.length))
+        s.addAttribute(.paragraphStyle, value: fixedParagraphStyle, range: NSRange(location: 0, length: s.length))
         return s
     }
 }
@@ -386,15 +412,22 @@ final class ChipAttachment: NSTextAttachment {
         return normalImage
     }
 
+    static let vPad: CGFloat = 3
+
+    /// The pill's (and therefore the field's fixed per-line) height.
+    static func pillHeight(for font: UIFont) -> CGFloat {
+        font.lineHeight.rounded(.up) + vPad * 2
+    }
+
     private static func render(label: String, font: UIFont, selected: Bool) -> UIImage {
         let hPad: CGFloat = 9
-        let vPad: CGFloat = 3
+        let vPad = ChipAttachment.vPad
         let trailingGap: CGFloat = 6  // breathing room before the next chip/text
         let textColor: UIColor = selected ? .white : .label
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: textColor]
         let textSize = (label as NSString).size(withAttributes: attrs)
         let pillWidth = textSize.width.rounded(.up) + hPad * 2
-        let pillHeight = textSize.height.rounded(.up) + vPad * 2
+        let pillHeight = ChipAttachment.pillHeight(for: font)
         let size = CGSize(width: pillWidth + trailingGap, height: pillHeight)
 
         let renderer = UIGraphicsImageRenderer(size: size)

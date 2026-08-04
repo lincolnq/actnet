@@ -19,11 +19,13 @@ struct MainTabView: View {
     @ViewBuilder
     private var tabs: some View {
         TabView(selection: $appState.selectedTab) {
-            Tab("Chats", systemImage: "message", value: AppState.Tab.chats) {
+            // Brand tab glyphs — design/Chats Bubble.svg and design/Network
+            // Globe.svg, imported as template SVGs so the tab tint applies.
+            Tab("Chats", image: "TabChats", value: AppState.Tab.chats) {
                 ChatsView()
             }
 
-            Tab("Network", systemImage: "server.rack", value: AppState.Tab.network) {
+            Tab("Network", image: "TabNetwork", value: AppState.Tab.network) {
                 NetworkView()
             }
 
