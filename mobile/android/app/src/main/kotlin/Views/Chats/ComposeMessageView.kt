@@ -1,6 +1,9 @@
 package net.theavalanche.app
 
+import android.content.Context
 import android.net.Uri
+import android.view.inputmethod.InputMethodManager
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -60,19 +63,24 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
@@ -134,8 +142,21 @@ fun ComposeMessageView(
 ) {
     val accounts by viewModel.accounts.collectAsStateWithLifecycle()
 
-    // Local state
-    val chips = remember { mutableStateListOf<ComposeChip>().also { it.addAll(initialChips) } }
+    // Local state. chips + selectedAccountId are rememberSaveable: pushing
+    // Name Group disposes this composition (NavHost), and on pop only
+    // saveable state comes back — plain remember returned an EMPTY composer.
+    val chips = rememberSaveable(
+        saver = listSaver(
+            save = { list -> list.flatMap { c -> listOf(c.id, c.did, c.displayName) } },
+            restore = { flat ->
+                mutableStateListOf<ComposeChip>().also { list ->
+                    flat.chunked(3).forEach { (id, did, name) ->
+                        list.add(ComposeChip(id = id, did = did, displayName = name))
+                    }
+                }
+            },
+        ),
+    ) { mutableStateListOf<ComposeChip>().also { it.addAll(initialChips) } }
     var query by remember { mutableStateOf("") }
     // Acting identity ("From"). Deliberately EMPTY at first: the composer
     // opens showing the whole merged contact book, and the identity gets
@@ -144,7 +165,7 @@ fun ComposeMessageView(
     // (the book filters to what that identity can reach). Either way the
     // other side follows. Single-account users never see the From row and
     // fall back to their only account at action time.
-    var selectedAccountId by remember { mutableStateOf<String?>(null) }
+    var selectedAccountId by rememberSaveable { mutableStateOf<String?>(null) }
     var allContacts by remember { mutableStateOf<List<AppViewModel.AccountContact>>(emptyList()) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showingContactPicker by remember { mutableStateOf(false) }
@@ -269,6 +290,17 @@ fun ComposeMessageView(
     LaunchedEffect(showingContactPicker) {
         if (!showingContactPicker) {
             tokenHandle.focusAndShowKeyboard()
+        }
+    }
+
+    // …but dismiss it on every exit — advancing to Name Group, opening a DM,
+    // or backing out to Chats (mirrors iOS). The composer leaves composition
+    // on all of these routes, so one dispose hook covers them.
+    val hostView = LocalView.current
+    DisposableEffect(Unit) {
+        onDispose {
+            val imm = hostView.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.hideSoftInputFromWindow(hostView.windowToken, 0)
         }
     }
 
@@ -418,7 +450,7 @@ fun ComposeMessageView(
                 if (peopleResults.isNotEmpty()) {
                     item {
                         Text(
-                            "People",
+                            "PEOPLE",
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                             style = MaterialTheme.typography.labelSmall,
                             color = LocalAvalancheColors.current.muted,
@@ -438,7 +470,7 @@ fun ComposeMessageView(
                 if (otherResults.isNotEmpty()) {
                     item {
                         Text(
-                            "Other",
+                            "OTHER",
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                             style = MaterialTheme.typography.labelSmall,
                             color = LocalAvalancheColors.current.muted,
@@ -735,6 +767,12 @@ private fun ActionBar(
     onDmTapped: () -> Unit,
     onNewGroupTapped: () -> Unit,
 ) {
+    // ONE morphing action — the recommended act for the current recipient
+    // count: "New Empty Group" (quiet outline) at 0, "DM" at exactly 1,
+    // "New Group (N)" at 2+. The non-recommended path at 1 recipient lives in
+    // a small text link under the button. The primary fill is fixed Plum500
+    // (like the outgoing bubble), so light and dark read identically and
+    // brand color means exactly one thing: "press this". Mirrors iOS.
     Column {
         if (errorMessage != null) {
             Text(
@@ -745,48 +783,67 @@ private fun ActionBar(
             )
         }
         HorizontalDivider()
+        // Always exactly ONE 48dp row — the bar never changes height. At one
+        // recipient the primary shares the row with a compact "Group" button
+        // (the alternate path); otherwise the single button fills the row.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            // DM button — prominent when exactly one recipient
-            if (chips.size == 1) {
-                Button(
-                    onClick = onDmTapped,
-                    modifier = Modifier.weight(1f).height(48.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = LocalAvalancheColors.current.brand),
-                ) {
-                    Text("DM")
+            when {
+                chips.size == 1 -> {
+                    Button(
+                        onClick = onDmTapped,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            // Fixed plum in both themes (matches the outgoing
+                            // bubble) — NOT the adaptive brand token, whose
+                            // pale dark-mode value inverted the hierarchy.
+                            containerColor = AvalancheColors.Plum500,
+                            contentColor = Color.White,
+                        ),
+                    ) {
+                        // Never empty — falls back to a shortened DID for
+                        // raw-DID recipients (mirrors iOS Chip.label).
+                        val name = chips[0].displayName.ifEmpty { shortenDid(chips[0].did) }
+                        Text("DM $name", maxLines = 1, fontWeight = FontWeight.SemiBold)
+                    }
+                    OutlinedButton(
+                        onClick = onNewGroupTapped,
+                        modifier = Modifier.height(48.dp),
+                        border = BorderStroke(1.dp, LocalAvalancheColors.current.ink.copy(alpha = 0.15f)),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = LocalAvalancheColors.current.ink,
+                        ),
+                    ) {
+                        Text(newGroupTitle, maxLines = 1)
+                    }
                 }
-            } else {
-                OutlinedButton(
-                    onClick = onDmTapped,
-                    modifier = Modifier.weight(1f).height(48.dp),
-                    enabled = chips.size == 1,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = LocalAvalancheColors.current.brand),
-                ) {
-                    Text("DM")
+                chips.size >= 2 -> {
+                    Button(
+                        onClick = onNewGroupTapped,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AvalancheColors.Plum500,
+                            contentColor = Color.White,
+                        ),
+                    ) {
+                        Text(newGroupTitle, maxLines = 1, fontWeight = FontWeight.SemiBold)
+                    }
                 }
-            }
-
-            // New Group button — prominent when 2+ recipients
-            if (chips.size >= 2) {
-                Button(
-                    onClick = onNewGroupTapped,
-                    modifier = Modifier.weight(1f).height(48.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = LocalAvalancheColors.current.brand),
-                ) {
-                    Text(newGroupTitle, maxLines = 1)
-                }
-            } else {
-                OutlinedButton(
-                    onClick = onNewGroupTapped,
-                    modifier = Modifier.weight(1f).height(48.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = LocalAvalancheColors.current.brand),
-                ) {
-                    Text(newGroupTitle, maxLines = 1)
+                else -> {
+                    OutlinedButton(
+                        onClick = onNewGroupTapped,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                        border = BorderStroke(1.dp, LocalAvalancheColors.current.ink.copy(alpha = 0.15f)),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = LocalAvalancheColors.current.ink,
+                        ),
+                    ) {
+                        Text(newGroupTitle, maxLines = 1)
+                    }
                 }
             }
         }
@@ -896,7 +953,7 @@ private fun ContactPickerSheet(
                 if (people.isNotEmpty()) {
                     item {
                         Text(
-                            "People",
+                            "PEOPLE",
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                             style = MaterialTheme.typography.labelSmall,
                             color = LocalAvalancheColors.current.muted,
@@ -916,7 +973,7 @@ private fun ContactPickerSheet(
                 if (other.isNotEmpty()) {
                     item {
                         Text(
-                            "Other",
+                            "OTHER",
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                             style = MaterialTheme.typography.labelSmall,
                             color = LocalAvalancheColors.current.muted,

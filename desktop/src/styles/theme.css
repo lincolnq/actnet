@@ -80,7 +80,8 @@ button, input, select, textarea {
                                        the plum paper so the frame recedes) */
     --color-paper: #2A1620;         /* plum900 — conversation canvas */
     --color-text: #FFF8F1;          /* sand50 */
-    --color-text-secondary: #E5D4C0;/* sand300 */
+    --color-text-secondary: #C7B6A0;/* sand400 — sand300 is nearly ink-bright
+                                       on dark surfaces, so muted read as primary */
     --color-sidebar: #1C0F16;       /* darker than bg, for sidebar separation */
     /* --color-accent stays plum500: it backs #fff-text buttons, so it must not
        lighten to plum200 (would fail contrast). */
