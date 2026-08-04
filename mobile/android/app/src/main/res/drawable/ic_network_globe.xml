@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Converted from design/Network Globe.svg. White so Compose Icon tint drives
+     the color. Wireframe globe on a stem, node on a horizontal rule. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="256"
+    android:viewportHeight="256">
+    <!-- globe ring -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="18"
+        android:pathData="M 38,102 a 90,90 0 1 0 180,0 a 90,90 0 1 0 -180,0" />
+    <!-- meridians -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="12"
+        android:pathData="M 128,12 L 128,192" />
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="12"
+        android:pathData="M 128,12 A 44,90 0 1 0 128,192 A 44,90 0 1 0 128,12 Z" />
+    <!-- latitudes -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="6"
+        android:pathData="M 52,58 L 204,58 M 52,146 L 204,146" />
+    <!-- stem down to node -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="12"
+        android:pathData="M 128,192 L 128,218" />
+    <!-- node (open ring) -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="12"
+        android:pathData="M 113,229 a 15,15 0 1 0 30,0 a 15,15 0 1 0 -30,0" />
+    <!-- horizontal rule, broken by the node -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="16"
+        android:strokeLineCap="round"
+        android:pathData="M 37,229 L 89,229 M 167,229 L 219,229" />
+</vector>

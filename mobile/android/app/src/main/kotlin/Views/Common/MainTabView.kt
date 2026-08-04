@@ -29,10 +29,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -52,7 +50,9 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -65,8 +65,8 @@ import androidx.compose.ui.unit.sp
 //
 // Mirrors iOS Sources/Views/Common/MainTabView.swift (docs/37): a bottom tab
 // surface with four destinations —
-//   - Chats    (message bubble → Message on Material)
-//   - Network  (server.rack → Dns on Material)
+//   - Chats    (brand bubble — design/Chats Bubble.svg → ic_chats_bubble)
+//   - Network  (globe + dashed links — design/Network Globe.svg → ic_network_globe)
 //   - Settings (gearshape → Settings; a tab pane hosting AccountsView,
 //               matching iOS)
 //   - Search   (iOS Tab(role: .search))
@@ -286,21 +286,21 @@ private fun FloatingTabBar(
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 FloatingTabItem(
-                    icon = Icons.AutoMirrored.Filled.Message,
+                    icon = painterResource(R.drawable.ic_chats_bubble),
                     label = "Chats",
                     selected = selectedTab == AppViewModel.Tab.CHATS,
                     width = itemWidth,
                     onClick = { onSelectTab(AppViewModel.Tab.CHATS) },
                 )
                 FloatingTabItem(
-                    icon = Icons.Filled.Dns,
+                    icon = painterResource(R.drawable.ic_network_globe),
                     label = "Network",
                     selected = selectedTab == AppViewModel.Tab.NETWORK,
                     width = itemWidth,
                     onClick = { onSelectTab(AppViewModel.Tab.NETWORK) },
                 )
                 FloatingTabItem(
-                    icon = Icons.Filled.Settings,
+                    icon = rememberVectorPainter(Icons.Filled.Settings),
                     label = "Settings",
                     selected = selectedTab == AppViewModel.Tab.SETTINGS,
                     width = itemWidth,
@@ -352,7 +352,7 @@ private fun SearchBubble(onClick: () -> Unit) {
 
 @Composable
 private fun FloatingTabItem(
-    icon: ImageVector,
+    icon: Painter,
     label: String,
     selected: Boolean,
     width: Dp,
@@ -384,7 +384,7 @@ private fun FloatingTabItem(
         verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
     ) {
         Icon(
-            imageVector = icon,
+            painter = icon,
             contentDescription = label,
             tint = tint,
             modifier = Modifier.size(22.dp),
