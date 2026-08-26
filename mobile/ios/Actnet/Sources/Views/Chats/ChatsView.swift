@@ -123,6 +123,10 @@ struct ChatsView: View {
             }
             .animation(.easeOut(duration: 0.13), value: appState.selectedChatsAccountTab)
         }
+        // The unread badge rides above the avatar's frame (offset y: -4) and the
+        // tab content has only 2pt of headroom, so the ScrollView's default
+        // clip shears the badge's top. Let the overlay draw outside the clip.
+        .scrollClipDisabled()
     }
 
     private func accountTab(_ account: Account) -> some View {
