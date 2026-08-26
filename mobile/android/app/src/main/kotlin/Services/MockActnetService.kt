@@ -318,16 +318,16 @@ class MockAppCore(
 
     override fun connectionState(): ConnectionState = ConnectionState.Connected
 
-    override fun waitForConnectionStateChange(last: ConnectionState): ConnectionState {
-        // Mock never changes — block for a long time so the listener loop idles.
-        Thread.sleep(60 * 60 * 1000L)
+    override suspend fun waitForConnectionStateChange(last: ConnectionState): ConnectionState {
+        // Mock never changes — suspend for a long time so the listener loop idles.
+        kotlinx.coroutines.delay(60 * 60 * 1000L)
         return ConnectionState.Connected
     }
 
-    override fun nextEvents(): List<IncomingEvent> {
+    override suspend fun nextEvents(): List<IncomingEvent> {
         // Poll for up to ~2 s, draining any pending messages.
         repeat(20) {
-            Thread.sleep(100)
+            kotlinx.coroutines.delay(100)
             val msgs = lock.withLock {
                 if (pendingMessages.isEmpty()) null
                 else {

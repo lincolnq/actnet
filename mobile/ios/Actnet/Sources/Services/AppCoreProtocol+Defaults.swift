@@ -106,14 +106,14 @@ extension AppCoreProtocol {
     // MARK: - Connection state / events
 
     func connectionState() -> ConnectionState { .connected }
-    func waitForConnectionStateChange(last: ConnectionState) throws -> ConnectionState {
-        // Block "forever"; the real listener task is happy to sit on an
+    func waitForConnectionStateChange(last: ConnectionState) async throws -> ConnectionState {
+        // Suspend "forever"; the real listener task is happy to sit on an
         // unresolved call.
-        Thread.sleep(forTimeInterval: 60 * 60)
+        try await Task.sleep(nanoseconds: 60 * 60 * 1_000_000_000)
         return .connected
     }
-    func nextEvents() throws -> [IncomingEvent] {
-        Thread.sleep(forTimeInterval: 0.1)
+    func nextEvents() async throws -> [IncomingEvent] {
+        try await Task.sleep(nanoseconds: 100_000_000)
         return []
     }
     func reconnectNow() {}

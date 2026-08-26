@@ -2246,20 +2246,27 @@ final class AppState: ObservableObject {
         eventTasks.removeAll()
     }
 
-    /// Block on `waitForConnectionStateChange` in a loop and mirror updates
+    /// Await `waitForConnectionStateChange` in a loop and mirror updates
     /// into `connectionStates[accountId]`.
+    ///
+    /// The wait is a genuine async FFI export: the task *suspends* while
+    /// parked, holding no thread. (It used to be a sync-blocking call on
+    /// `Task.detached`, which parked one cooperative-pool thread per account
+    /// forever — two loops x three accounts exhausted the entire pool and
+    /// wedged every other detached FFI call. Never wrap an indefinitely
+    /// blocking call in `Task.detached`.)
     private func connectionStateLoop(accountId: String) async {
         AppLog.info("conn", "starting connection-state listener for \(accountId)")
         // Seed from the current snapshot so we don't miss the initial transition.
         guard let core = cores[accountId] else { return }
-        var last: ConnectionState = await Task.detached { core.connectionState() }.value
+        var last: ConnectionState = core.connectionState()
         connectionStates[accountId] = last
         while !Task.isCancelled {
             guard let core = cores[accountId] else { break }
             let lastSnapshot = last
             let next: ConnectionState
             do {
-                next = try await Task.detached { try core.waitForConnectionStateChange(last: lastSnapshot) }.value
+                next = try await core.waitForConnectionStateChange(last: lastSnapshot)
             } catch {
                 AppLog.warn("conn", "state listener for \(accountId) ended: \(error.localizedDescription)")
                 break
@@ -2278,14 +2285,16 @@ final class AppState: ObservableObject {
         AppLog.info("conn", "connection-state listener ended for \(accountId)")
     }
 
-    /// Block on `nextEvents` in a loop and dispatch each event.
+    /// Await `nextEvents` in a loop and dispatch each event. Suspends (no
+    /// thread held) while idle — see `connectionStateLoop` for why this must
+    /// never be a blocking call on `Task.detached`.
     private func eventLoop(accountId: String) async {
         AppLog.info("evt", "starting event listener for \(accountId)")
         while !Task.isCancelled {
             guard let core = cores[accountId] else { break }
             let events: [IncomingEvent]
             do {
-                events = try await Task.detached { try core.nextEvents() }.value
+                events = try await core.nextEvents()
             } catch {
                 AppLog.warn("evt", "event listener for \(accountId) ended: \(error.localizedDescription)")
                 break

@@ -1211,31 +1211,28 @@ impl AppCore {
         self.inner.set_app_active(active);
     }
 
-    /// Blocks (off the event loop) until the connection state differs from
-    /// `last`, then returns the new value.
+    /// Suspends until the connection state differs from `last`, then returns
+    /// the new value. The core method is genuinely async (a watch-channel
+    /// await), so no spawn_blocking thread is needed.
     #[napi]
     pub async fn wait_for_connection_state_change(
         &self,
         last: ConnectionStateJs,
     ) -> napi::Result<ConnectionStateJs> {
         let last = last.into_ffi()?;
-        let core = self.inner.clone();
-        let new_state = tokio::task::spawn_blocking(move || core.wait_for_connection_state_change(last))
+        let new_state = self
+            .inner
+            .wait_for_connection_state_change(last)
             .await
-            .map_err(join_err)?
             .map_err(to_napi)?;
         Ok(new_state.into())
     }
 
-    /// Block until at least one event is available; drain the queue and
+    /// Suspend until at least one event is available; drain the queue and
     /// return the batch.
     #[napi]
     pub async fn next_events(&self) -> napi::Result<Vec<IncomingEventJs>> {
-        let core = self.inner.clone();
-        let events = tokio::task::spawn_blocking(move || core.next_events())
-            .await
-            .map_err(join_err)?
-            .map_err(to_napi)?;
+        let events = self.inner.next_events().await.map_err(to_napi)?;
         Ok(events.into_iter().map(Into::into).collect())
     }
 

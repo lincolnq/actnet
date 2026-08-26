@@ -197,25 +197,25 @@ final class MockAppCore: AppCoreProtocol, @unchecked Sendable {
         .connected
     }
 
-    func waitForConnectionStateChange(last: ConnectionState) throws -> ConnectionState {
-        // Mock never changes — block forever (the listener task is fine
+    func waitForConnectionStateChange(last: ConnectionState) async throws -> ConnectionState {
+        // Mock never changes — suspend forever (the listener task is fine
         // sitting on a never-resolving call).
-        Thread.sleep(forTimeInterval: 60 * 60)
+        try await Task.sleep(nanoseconds: 60 * 60 * 1_000_000_000)
         return .connected
     }
 
-    func nextEvents() throws -> [IncomingEvent] {
+    func nextEvents() async throws -> [IncomingEvent] {
         // Drain any pending incoming messages as Message events.
         for _ in 0..<20 {
-            Thread.sleep(forTimeInterval: 0.1)
-            lock.lock()
-            if !pendingMessages.isEmpty {
-                let msgs = pendingMessages
+            try await Task.sleep(nanoseconds: 100_000_000)
+            let msgs: [DecryptedMessage] = lock.withLock {
+                let pending = pendingMessages
                 pendingMessages.removeAll()
-                lock.unlock()
+                return pending
+            }
+            if !msgs.isEmpty {
                 return msgs.map { IncomingEvent.message(msg: $0) }
             }
-            lock.unlock()
         }
         // No events arrived in the polling window — return empty so caller loops.
         return []

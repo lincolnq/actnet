@@ -316,15 +316,19 @@ interface AppCoreProtocol {
     fun connectionState(): ConnectionState
 
     /**
-     * Blocks until the connection state changes from [last]. Suitable for a
-     * background thread poll loop.
+     * Suspends until the connection state changes from [last]. A genuine
+     * suspend across the FFI (no thread parked while waiting) — the platform
+     * loops sit on this for the process lifetime, so it must never be a
+     * blocking call.
      */
-    @Throws(AppErrorFfi::class) fun waitForConnectionStateChange(last: ConnectionState): ConnectionState
+    @Throws(AppErrorFfi::class) suspend fun waitForConnectionStateChange(last: ConnectionState): ConnectionState
 
     /**
-     * Returns any newly arrived events. Blocks briefly if the queue is empty.
+     * Suspends until at least one event is available, then drains and
+     * returns the batch. Same no-thread-parked contract as
+     * [waitForConnectionStateChange].
      */
-    @Throws(AppErrorFfi::class) fun nextEvents(): List<IncomingEvent>
+    @Throws(AppErrorFfi::class) suspend fun nextEvents(): List<IncomingEvent>
 
     /**
      * Opportunistically retry/validate connectivity now: wakes the reconnect
@@ -487,9 +491,9 @@ class LiveAppCoreProtocol(private val core: AppCore) : AppCoreProtocol {
     override fun unregisterPushToken(relayUrl: String) = core.unregisterPushToken(relayUrl)
 
     override fun connectionState(): ConnectionState = core.connectionState()
-    override fun waitForConnectionStateChange(last: ConnectionState): ConnectionState =
+    override suspend fun waitForConnectionStateChange(last: ConnectionState): ConnectionState =
         core.waitForConnectionStateChange(last)
-    override fun nextEvents(): List<IncomingEvent> = core.nextEvents()
+    override suspend fun nextEvents(): List<IncomingEvent> = core.nextEvents()
     override fun reconnectNow() = core.reconnectNow()
     override fun setAppActive(active: Boolean) = core.setAppActive(active)
 
@@ -705,15 +709,14 @@ open class MockAppCoreProtocol : AppCoreProtocol {
 
     override fun connectionState(): ConnectionState = ConnectionState.Connected
 
-    // Blocks for a long time in the real impl; mock returns immediately.
-    override fun waitForConnectionStateChange(last: ConnectionState): ConnectionState {
-        // TODO(opus): in a real poll loop this blocks; mock just sleeps briefly.
-        Thread.sleep(100)
+    // Suspends indefinitely in the real impl; mock just naps briefly.
+    override suspend fun waitForConnectionStateChange(last: ConnectionState): ConnectionState {
+        kotlinx.coroutines.delay(100)
         return ConnectionState.Connected
     }
 
-    override fun nextEvents(): List<IncomingEvent> {
-        Thread.sleep(100)
+    override suspend fun nextEvents(): List<IncomingEvent> {
+        kotlinx.coroutines.delay(100)
         return emptyList()
     }
 

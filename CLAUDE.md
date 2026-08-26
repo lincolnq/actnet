@@ -77,7 +77,7 @@ types ← crypto ← store ← net ← app-core
 
 3. **Server DB functions take `&mut PgConnection`** — callers use `pool.acquire()` for auto-commit or `pool.begin()` for transactions. Enables transaction-rollback testing.
 
-4. **UniFFI: sync exports, global runtime.** libsignal traits return non-Send futures, so UniFFI async export doesn't work. FFI methods are sync, blocking on a `OnceLock<Runtime>`. Tests use `_async` variants.
+4. **UniFFI: sync exports, global runtime — except long waits.** libsignal traits return non-Send futures, so UniFFI async export doesn't work for the crypto paths. Those FFI methods are sync, blocking on a `OnceLock<Runtime>`. Tests use `_async` variants. **Exception:** methods whose future is a pure channel await (`next_events`, `wait_for_connection_state_change`) are exported natively async — they are `Send` and platform loops park on them for the process lifetime, so a sync-blocking export would pin one thread per call (this exhausted Swift's fixed-width cooperative pool at 3 accounts and wedged the app). Never add a sync FFI export that blocks indefinitely; never wrap one in `Task.detached` / `Dispatchers.IO` on the platform side.
 
 5. **Interior mutability for FFI.** `AppCore` uses `Mutex<AppCoreInner>` since UniFFI wraps objects in `Arc`.
 

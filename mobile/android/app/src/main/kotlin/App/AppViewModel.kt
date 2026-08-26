@@ -2528,24 +2528,27 @@ class AppViewModel(
     }
 
     /**
-     * Block on waitForConnectionStateChange in a loop and mirror updates
+     * Await waitForConnectionStateChange in a loop and mirror updates
      * into connectionStates[accountId].
      * Mirrors iOS AppState.connectionStateLoop(accountId:).
+     *
+     * The wait is a genuine suspend across the FFI — no Dispatchers.IO
+     * wrapper, no thread parked while idle. (It used to pin one IO thread
+     * per account forever; iOS's fixed-width cooperative pool made the same
+     * pattern a hard deadlock at three accounts.)
      */
     private suspend fun connectionStateLoop(accountId: String) {
         AppLog.info("conn", "starting connection-state listener for $accountId")
         val core = cores[accountId] ?: return
 
-        var last: ConnectionState = withContext(Dispatchers.IO) { core.connectionState() }
+        var last: ConnectionState = core.connectionState()
         _connectionStates.update { it + (accountId to last) }
 
         while (true) {
             val currentCore = cores[accountId] ?: break
             val lastSnapshot = last
             val next: ConnectionState = runCatching {
-                withContext(Dispatchers.IO) {
-                    currentCore.waitForConnectionStateChange(last = lastSnapshot)
-                }
+                currentCore.waitForConnectionStateChange(last = lastSnapshot)
             }.getOrElse { error ->
                 AppLog.warn("conn", "state listener for $accountId ended: ${error.message}")
                 null
@@ -2565,7 +2568,9 @@ class AppViewModel(
     }
 
     /**
-     * Block on nextEvents in a loop and dispatch each event.
+     * Await nextEvents in a loop and dispatch each event. Suspends (no
+     * thread held) while idle — see connectionStateLoop for why this must
+     * not run under Dispatchers.IO as a blocking call.
      * Mirrors iOS AppState.eventLoop(accountId:).
      */
     private suspend fun eventLoop(accountId: String) {
@@ -2573,7 +2578,7 @@ class AppViewModel(
         while (true) {
             val core = cores[accountId] ?: break
             val events: List<IncomingEvent> = runCatching {
-                withContext(Dispatchers.IO) { core.nextEvents() }
+                core.nextEvents()
             }.getOrElse { error ->
                 AppLog.warn("evt", "event listener for $accountId ended: ${error.message}")
                 null

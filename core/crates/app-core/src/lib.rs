@@ -2665,29 +2665,33 @@ impl AppCore {
         self.state_tx.borrow().clone()
     }
 
-    /// Block until the connection state differs from `last`, then return the
+    /// Suspend until the connection state differs from `last`, then return the
     /// new value. iOS runs this in a tight loop on a dedicated task and
     /// publishes to its UI state.
     ///
+    /// Exported async (not sync-blocking like the rest of the surface): the
+    /// platform loops park on this for the process lifetime, and a blocked
+    /// thread per account exhausts Swift's fixed-width cooperative pool. The
+    /// future is a pure watch-channel await — no libsignal state — so it is
+    /// `Send` and safe to export async despite CLAUDE.md pattern #4.
+    ///
     /// Returns `Err` if the underlying watch sender is dropped (i.e. the
     /// `AppCore` is being torn down).
-    pub fn wait_for_connection_state_change(
+    pub async fn wait_for_connection_state_change(
         &self,
         last: ConnectionState,
     ) -> Result<ConnectionState, AppErrorFfi> {
-        ffi_runtime().block_on(async {
-            let mut rx = self.state_tx.subscribe();
-            let current = rx.borrow().clone();
-            if current != last {
-                return Ok::<_, AppError>(current);
-            }
-            rx.changed()
-                .await
-                .map_err(|_| AppError::Protocol("connection state channel closed".into()))?;
-            let new_state = rx.borrow().clone();
-            Ok(new_state)
-        })
-        .map_err(AppErrorFfi::from)
+        let mut rx = self.state_tx.subscribe();
+        let current = rx.borrow().clone();
+        if current != last {
+            return Ok(current);
+        }
+        rx.changed()
+            .await
+            .map_err(|_| AppError::Protocol("connection state channel closed".into()))
+            .map_err(AppErrorFfi::from)?;
+        let new_state = rx.borrow().clone();
+        Ok(new_state)
     }
 
     /// Opportunistically retry/validate connectivity now. Wakes the reconnect
@@ -2715,26 +2719,19 @@ impl AppCore {
         }
     }
 
-    /// Block until at least one event is available; drain the queue and
+    /// Suspend until at least one event is available; drain the queue and
     /// return the batch.
+    ///
+    /// Exported async for the same reason as
+    /// `wait_for_connection_state_change`: platform event loops park on this
+    /// forever, and the future is a pure channel await (`Send`), so callers
+    /// suspend instead of holding a thread.
     ///
     /// Single-consumer: concurrent FFI callers serialize on the receiver
     /// mutex. Returns `Err` if the event channel is closed (`AppCore` torn
     /// down).
-    pub fn next_events(&self) -> Result<Vec<IncomingEvent>, AppErrorFfi> {
-        ffi_runtime().block_on(async {
-            let mut rx = self.event_rx.lock().await;
-            let first = rx
-                .recv()
-                .await
-                .ok_or_else(|| AppError::Protocol("event channel closed".into()))?;
-            let mut batch = vec![first];
-            while let Ok(more) = rx.try_recv() {
-                batch.push(more);
-            }
-            Ok::<_, AppError>(batch)
-        })
-        .map_err(AppErrorFfi::from)
+    pub async fn next_events(&self) -> Result<Vec<IncomingEvent>, AppErrorFfi> {
+        self.next_events_async().await.map_err(AppErrorFfi::from)
     }
 
     /// Save a message to local history (SQLCipher).
