@@ -145,5 +145,14 @@ enum SecureEnclaveKeyManager {
         case randomGenerationFailed(OSStatus)
         case keychainReadFailed(OSStatus)
         case keychainWriteFailed(OSStatus)
+
+        /// True when the read failed because the device hasn't been unlocked
+        /// since boot: `kSecAttrAccessibleAfterFirstUnlock*` items are
+        /// unreadable in that window (`errSecInteractionNotAllowed`). The NSE
+        /// branches on this to show its static "phone locked" banner.
+        var isDeviceLockedSinceBoot: Bool {
+            if case .keychainReadFailed(errSecInteractionNotAllowed) = self { return true }
+            return false
+        }
     }
 }

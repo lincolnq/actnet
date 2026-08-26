@@ -34,8 +34,9 @@
 //!   `silent` (default) sends a content-free silent wakeup (`content-available`,
 //!   PushType::Background); `alert` sends a content-free **alert +
 //!   `mutable-content`** push (PushType::Alert) carrying only a generic
-//!   "New message", which invokes the app's Notification Service Extension to
-//!   fetch + decrypt and rewrite the banner on-device. Defaulting to `silent`
+//!   fallback body, which invokes the app's Notification Service Extension to
+//!   fetch + decrypt on-device (docs/16 Stage 5: the NSE posts per-message local
+//!   notifications and suppresses the placeholder). Defaulting to `silent`
 //!   lets this relay deploy without changing behavior until an operator opts in.
 //!
 //! - **fcm** — FCM HTTP v1 with a service account. We mint an OAuth2 access
@@ -195,9 +196,11 @@ impl Apns {
 
     /// Send a visible **alert + `mutable-content`** push (docs/16). The
     /// `mutable-content` flag invokes the app's Notification Service Extension,
-    /// which fetches + decrypts on-device and rewrites the banner with the real
-    /// sender and message; an app without the NSE just shows the generic body.
-    /// The payload stays content-free — a fixed "New message", no sender / text /
+    /// which fetches + decrypts on-device, posts one local notification per
+    /// message, and suppresses this placeholder alert (docs/16 Stage 5). The
+    /// generic body below is only ever shown when the NSE never runs (crash /
+    /// system throttle) or on an app build without the NSE — hence the hedged
+    /// wording (Signal's). The payload stays content-free — no sender / text /
     /// ciphertext.
     ///
     /// Deliberately **not** `content-available`: we don't want to also wake the
@@ -212,7 +215,7 @@ impl Apns {
             _ => &self.sandbox, // default to sandbox for unknown/missing values
         };
         let payload = DefaultNotificationBuilder::new()
-            .set_title("New message")
+            .set_title("You may have new messages")
             .set_mutable_content()
             .set_sound("default")
             .build(

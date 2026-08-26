@@ -101,6 +101,11 @@ See `docs/14-bitchat-fallback.md` for the full design. BLE mesh transport as a f
 - [ ] Pseudonym rotation grace period test
 - [ ] APNs/FCM sandbox integration test
 
+### NSE follow-ups (iOS)
+- [ ] Request `com.apple.developer.usernotifications.filtering` from Apple (account-holder action; justification: E2EE messenger, placeholder suppression — same grant Signal ships in `SignalNSE-AppStore.entitlements`). When granted: add the key to the NSE entitlements in `project.yml`, flip `NotificationService.hasFilteringEntitlement` to true, re-run the docs/16 Stage 5 device checks. This unlocks full Signal-parity presentation (suppressed placeholder, zero stray "New message" banners in bursts).
+- [ ] Lost-push detection (Signal's APNs token-health check, adapted). With the Stage-5 fail-silent NSE (docs/16), a dead APNs token or broken NSE means silent misses with no signal anywhere. Detection is fully client-local: the app and NSE record "push arrived at T" in shared App Group storage on every push; on app launch, if the mailbox fetch drains messages whose age implies pushes should have arrived in a window with none recorded, presume the token dead and re-register via the existing `register_push_token` FFI. Only count messages delivered by mailbox fetch, not live-WS (the relay doesn't push when a WS is up). No new server surface.
+- [ ] NSE badge count: Signal completes the suppressed placeholder push with badge-only content carrying the unread count. Needs an unread-count FFI callable from the NSE; deferred so Stage 5 stays presentation-only.
+
 ### UnifiedPush follow-ups (degoogled Android)
 - [ ] No-distributor keepalive: persistent foreground-service WebSocket for degoogled phones with no UnifiedPush distributor installed (today such devices get push only while the app is foregrounded). Needs a foreground-service notification + lifecycle/battery design.
 - [ ] Distributor picker UI: when multiple UnifiedPush distributors are installed and none is saved, the app currently registers none (auto-picks only when exactly one is present). Add a settings picker / first-run prompt.

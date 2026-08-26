@@ -8,7 +8,11 @@ test the NSE on a device build, then back. The rich banner + cold-launch tap
 routing are **verified on device**. Stage 4 (cross-process WAL/`busy_timeout`
 hardening + contention test) is **done**. The memory feasibility experiment
 (Stage-0 probe) was done and its scaffolding removed — its result is recorded
-under "Footprint" below.
+under "Footprint" below. Stage 5 (Signal-parity presentation: per-message local
+notifications, placeholder suppressed, fail-silent) is implemented but **gated
+off pending Apple's notification-filtering entitlement** — without it iOS
+displays the original payload on empty completion (verified on device); the
+interim rewrite model is active. See "Stage 5" below.
 
 ## Problem
 
@@ -41,7 +45,9 @@ sender and body — falling back to a generic banner if it can't finish.
 - **Private:** Apple's push path still carries **no message content and no
   ciphertext** — only a token + a generic alert (+ optionally an opaque
   pseudonym, see Targeting). The NSE fetches and decrypts locally.
-- **Degrades to a generic banner, never to silence** (the asymmetry vs. today).
+- ~~**Degrades to a generic banner, never to silence** (the asymmetry vs. today).~~
+  **Reversed in Stage 5** — see "Stage 5: Signal-parity presentation" below for
+  the rationale and what replaced it.
 
 ## Non-goals
 
@@ -161,10 +167,10 @@ items — so the extension holds no crypto logic.
   Group + the shared keychain access group; link `AppCoreFFI.xcframework`).
 - `UNNotificationServiceExtension.didReceive`: read the account list + DB key from
   shared storage, **fetch every account** (no targeting — see below), call the
-  app-core fetch FFI within the ~30 s budget, rewrite `bestAttemptContent`
-  (title = sender, body = message) for the triggering notification, and **schedule
-  additional local notifications** for any other new messages.
-  `serviceExtensionTimeWillExpire` → deliver the generic best-attempt.
+  app-core fetch FFI within the ~30 s budget, post **one local notification per
+  fetched message**, and complete the triggering push with **empty content**
+  (suppressing the placeholder). `serviceExtensionTimeWillExpire` → complete
+  silently. See "Stage 5" below for why banners are decoupled from pushes.
 - Main-app changes: DB path + key + account-list migration to shared storage (deps
   1–3); the existing silent-push handler (`ActnetApp.swift:93`) can stay as a
   belt-and-suspenders wake but is no longer the primary path.
@@ -194,6 +200,79 @@ on-device by the NSE. This is the Signal posture. Note the known forensics cavea
 decrypted banner text then lives in iOS's notification store
 (`docs/signal-research/foreground-notifications.md`).
 
+## Stage 5: Signal-parity presentation (banners decoupled from pushes)
+
+The Stage-3 model — each push's `contentHandler` rewrites its own banner, extras
+posted as additional local notifications, generic fallback on any failure —
+coupled banner count to push count. The mailbox is drain-once
+(`fetch_notifications` acks what it fetches), so in a burst of N messages one
+NSE invocation drains all N and the other N−1 invocations fetch nothing and
+deliver their generic "New message" best-attempt. Observed on device as N rich
+banners plus several stray "New message" banners that never resolve.
+
+The fix copies Signal's presentation model in full
+(`docs/signal-research/notification-service-extension.md`):
+
+- **Every fetched message is posted as its own local notification** via
+  `UNUserNotificationCenter.add()` — including the newest; the triggering push
+  is never rewritten.
+- **The triggering push is completed with empty content** (no alert
+  title/body), which suppresses its banner. An empty successful fetch shows
+  nothing — correct, because a sibling invocation or the main app already
+  presented those messages.
+- **Failures complete silently too** (fetch error, timeout, superseded fetch).
+  One exception: the device hasn't been unlocked since boot
+  (`errSecInteractionNotAllowed` reading the DB key), which shows a single
+  static "unlock your phone" banner per process — the one failure the user can
+  act on.
+- **A stacked push supersedes a queued fetch**: fetches are serialized in the
+  NSE process, and a queued fetch that a newer push has overtaken skips its
+  fetch (any fetch drains every mailbox). Signal's
+  `enqueueCancellingPrevious`, adapted to our synchronous FFI — a blocking
+  in-flight fetch is not interruptible, only queued work is skipped.
+
+### The entitlement gate (found on device verification)
+
+Suppressing the placeholder is not possible with a plain NSE: **iOS ignores an
+empty completion and displays the original payload unless the app holds
+`com.apple.developer.usernotifications.filtering`** — a per-account grant
+requested from Apple with a justification (E2EE messaging is the canonical
+approved use case). Signal ships it in `SignalNSE/SignalNSE-AppStore.entitlements`
+(the research doc missed it because the dev-signing entitlements file doesn't
+contain it). Verified on device here: with empty completion and no entitlement,
+a single message produced both the rich local notification and the "New
+message" placeholder, simultaneously.
+
+Until the grant lands, `NotificationService.hasFilteringEntitlement` is false
+and the NSE runs the **interim rewrite model**: the newest fetched message
+rewrites the triggering banner (single-message case shows exactly one banner),
+extras are posted as local notifications, and no-op/failure paths deliver the
+generic placeholder — so a burst can still leave stray generic banners. That
+stray-banner gap is exactly what the entitlement closes.
+
+**Action to enable full parity:** request the entitlement from Apple
+(developer.apple.com, notification-filtering entitlement request), add the key
+to the NSE entitlements in `project.yml`, flip `hasFilteringEntitlement` to
+true, and re-run the Stage 5 device checks.
+
+This **reverses the earlier "degrades to a generic banner, never to silence"
+decision.** Why: a generic banner on the no-op paths is not a degraded signal
+but a false one (there is no unseen message), and it fires routinely on every
+burst, whereas real fetch failures are rare. Signal accepts rare silence and
+compensates with APNs token-health detection; ours is tracked in `docs/02`
+("lost-push detection") and is deliberately not built yet.
+
+**Rejected alternative — hybrid fallback:** keep the generic banner for
+*error/timeout* paths and go silent only on success-with-zero-items. Provably
+never shows a false banner, preserves the never-silence property for real
+failures. Rejected (for now) in favor of exact Signal parity and simpler
+behavior; revisit if silent misses are observed in practice before lost-push
+detection lands.
+
+The relay's fallback alert body (shown only when the NSE never runs — crash or
+system throttle) changed from "New message" to Signal's hedged wording,
+"You may have new messages".
+
 ## Staged plan
 
 1. **Shared storage foundation** (deps 1–3): keychain access group, DB → App Group
@@ -204,6 +283,12 @@ decrypted banner text then lives in iOS's notification store
    accounts, rewrite banner, generic fallback. Plus cold-launch tap routing.
    **Done; rich banner + tap verified on device.**
 4. **Cross-process hardening** (dep 4): WAL/busy_timeout + contention test. **Done.**
+5. **Signal-parity presentation** (see above): per-message local notifications,
+   placeholder suppressed, fail-silent + phone-locked banner, superseded-fetch
+   skip, `os_log` on every branch (subsystem `net.theavalanche.nse`).
+   **Implemented but gated off** behind `hasFilteringEntitlement` — blocked on
+   the Apple filtering-entitlement grant; interim rewrite model active
+   (see "The entitlement gate").
 
 ## Test plan
 
@@ -213,8 +298,17 @@ decrypted banner text then lives in iOS's notification store
   interleaves decrypt/ack writes — assert no corruption / no double-advance.
 - Device (manual, the only real proof): terminate the app, send a DM and a group
   message from another account, confirm a **rich** banner (real sender + body)
-  appears; and that after killing the NSE mid-fetch you still get the generic
-  fallback.
+  appears.
+- Stage 5 device checks: (a) a single message shows exactly one rich banner and
+  the placeholder never appears, not even briefly (this verifies the
+  load-bearing assumption that empty completion suppresses the alert);
+  (b) a burst of 8 shows exactly 8 rich banners and zero "New message";
+  (c) airplane-mode after the push lands → nothing shown, message appears on
+  app open (the accepted fail-silent behavior — confirm it feels right live);
+  (d) reboot without unlocking → one static "phone locked" banner, rich banners
+  resume after unlock; (e) app open with a live WS → in-app notification only,
+  no NSE banner; (f) after each scenario the `net.theavalanche.nse` log lines
+  in Console.app identify the branch taken.
 - Migration: existing install with DBs in `applicationSupport` upgrades and still
   opens after the move to the App Group container.
 
