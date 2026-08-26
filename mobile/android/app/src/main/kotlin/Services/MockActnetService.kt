@@ -345,6 +345,8 @@ class MockAppCore(
 
     override fun reconnectNow() {}
     override fun setAppActive(active: Boolean) {}
+    override fun prepareForBackground() {}
+    override fun resumeFromBackground() {}
 
     override fun receiveMessages(): List<DecryptedMessage> {
         Thread.sleep(100)

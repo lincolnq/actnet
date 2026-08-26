@@ -118,6 +118,8 @@ extension AppCoreProtocol {
     }
     func reconnectNow() {}
     func setAppActive(active: Bool) {}
+    func prepareForBackground() {}
+    func resumeFromBackground() {}
 
     // MARK: - Groups (docs/03-groups.md §5)
 

@@ -26,9 +26,88 @@
 //! (docs/06 §7) — the record-level storage key is a separate concern.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tokio_rusqlite::Connection;
 
 use crate::error::StoreError;
+
+/// A [`Connection`] behind a suspension gate.
+///
+/// iOS kills an app that holds a file/SQLite lock on an App Group file at the
+/// instant it suspends (`0xDEAD10CC` — docs/16 §background lifecycle). The gate
+/// lets the platform quiesce before suspension: [`suspend`](Self::suspend)
+/// parks every *new* SQLite call and waits out the in-flight one, so the
+/// process suspends holding no lock; [`resume`](Self::resume) releases parked
+/// callers. The gate is per-process — the NSE opens its own connections and is
+/// never suspended mid-work (it completes or is terminated).
+///
+/// Mechanics: normal calls hold a read guard for the duration of exactly one
+/// SQLite call; `suspend` flips the flag (parking new callers) and then takes
+/// the write lock, which by construction waits until the in-flight call
+/// commits. Bounded by one call + the cross-process busy timeout.
+#[derive(Clone)]
+pub(crate) struct GatedConnection {
+    conn: Connection,
+    gate: Arc<Gate>,
+}
+
+struct Gate {
+    /// True while the platform expects imminent process suspension.
+    suspended: tokio::sync::watch::Sender<bool>,
+    /// Read-held per call; write-acquired by `suspend` to drain in-flight work.
+    lock: tokio::sync::RwLock<()>,
+}
+
+impl GatedConnection {
+    fn new(conn: Connection) -> Self {
+        Self {
+            conn,
+            gate: Arc::new(Gate {
+                suspended: tokio::sync::watch::channel(false).0,
+                lock: tokio::sync::RwLock::new(()),
+            }),
+        }
+    }
+
+    /// Run one SQLite call on the connection's blocking thread, waiting first
+    /// if the gate is suspended. Same contract as [`Connection::call`].
+    pub(crate) async fn call<F, R>(&self, function: F) -> tokio_rusqlite::Result<R>
+    where
+        F: FnOnce(&mut rusqlite::Connection) -> tokio_rusqlite::Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let mut rx = self.gate.suspended.subscribe();
+        let _guard = loop {
+            // Park while suspended. `wait_for` returns immediately when the
+            // value already satisfies the predicate; Err (sender dropped) can't
+            // happen while `self` holds the gate alive.
+            let _ = rx.wait_for(|s| !*s).await;
+            let guard = self.gate.lock.read().await;
+            // Re-check: a suspend() may have flipped the flag between the wait
+            // and the read acquire (its write-acquire orders after our guard,
+            // so it will wait for us — but a *fresh* call must not slip in
+            // after the drain completed).
+            if !*rx.borrow() {
+                break guard;
+            }
+            drop(guard);
+        };
+        self.conn.call(function).await
+    }
+
+    /// Park new calls and wait for the in-flight one to finish. Idempotent.
+    pub(crate) async fn suspend(&self) {
+        self.gate.suspended.send_replace(true);
+        // Write-acquire drains every read guard (in-flight call), then release
+        // immediately — the flag alone keeps new callers parked.
+        drop(self.gate.lock.write().await);
+    }
+
+    /// Reopen the gate. Idempotent; parked callers proceed in wake order.
+    pub(crate) fn resume(&self) {
+        self.gate.suspended.send_replace(false);
+    }
+}
 
 /// Durable per-identity state (identity.db). See the module docs.
 ///
@@ -36,7 +115,7 @@ use crate::error::StoreError;
 /// multi-`&mut` constraint on this store (that applies to [`DeviceStore`]).
 #[derive(Clone)]
 pub struct IdentityStore {
-    pub(crate) conn: Connection,
+    pub(crate) conn: GatedConnection,
 }
 
 /// Per-device transport crypto + server-bound caches (device.db). Implements
@@ -55,7 +134,7 @@ pub struct IdentityStore {
 /// Double Ratchet state.
 #[derive(Clone)]
 pub struct DeviceStore {
-    pub(crate) conn: Connection,
+    pub(crate) conn: GatedConnection,
     /// The identity store this device belongs to. Used by the `IdentityKeyStore`
     /// impl (identity keypair + trust store live in identity.db) and as an
     /// ergonomic path to durable methods for code that already holds a
@@ -147,7 +226,7 @@ fn add_column_if_missing(
 }
 
 /// True if a table with `name` exists in the database behind `conn`.
-async fn table_exists(conn: &Connection, name: &'static str) -> Result<bool, StoreError> {
+async fn table_exists(conn: &GatedConnection, name: &'static str) -> Result<bool, StoreError> {
     conn.call(move |conn| {
         let n: i64 = conn.query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -166,7 +245,7 @@ impl IdentityStore {
     pub async fn open(path: &Path, key: &DatabaseKey) -> Result<Self, StoreError> {
         let conn = Connection::open(path).await?;
         apply_key(&conn, key).await?;
-        let store = Self { conn };
+        let store = Self { conn: GatedConnection::new(conn) };
         store.migrate().await?;
         Ok(store)
     }
@@ -174,7 +253,7 @@ impl IdentityStore {
     /// Open an in-memory identity database. Useful for tests.
     pub async fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().await?;
-        let store = Self { conn };
+        let store = Self { conn: GatedConnection::new(conn) };
         store.migrate().await?;
         Ok(store)
     }
@@ -279,7 +358,7 @@ impl DeviceStore {
     ) -> Result<Self, StoreError> {
         let conn = Connection::open(path).await?;
         apply_key(&conn, key).await?;
-        let store = Self { conn, identity };
+        let store = Self { conn: GatedConnection::new(conn), identity };
         store.migrate().await?;
         Ok(store)
     }
@@ -289,9 +368,29 @@ impl DeviceStore {
     pub async fn open_in_memory() -> Result<Self, StoreError> {
         let identity = IdentityStore::open_in_memory().await?;
         let conn = Connection::open_in_memory().await?;
-        let store = Self { conn, identity };
+        let store = Self { conn: GatedConnection::new(conn), identity };
         store.migrate().await?;
         Ok(store)
+    }
+
+    /// Quiesce both databases before process suspension (docs/16 §background
+    /// lifecycle): park all new SQLite calls and wait for the in-flight one on
+    /// each connection, so iOS never suspends this process while it holds a
+    /// lock on an App Group file (`0xDEAD10CC`). Bounded by one SQLite call
+    /// plus the cross-process busy timeout per database. Idempotent.
+    ///
+    /// Callers parked at the gate hold no locks and simply resume where they
+    /// left off after [`resume_from_background`](Self::resume_from_background).
+    pub async fn suspend_for_background(&self) {
+        self.conn.suspend().await;
+        self.identity.conn.suspend().await;
+    }
+
+    /// Reopen both gates after returning to the foreground. Cheap, idempotent,
+    /// safe to call even if never suspended.
+    pub fn resume_from_background(&self) {
+        self.conn.resume();
+        self.identity.conn.resume();
     }
 
     /// Apply the device schema (idempotent).
@@ -411,7 +510,7 @@ pub async fn open_split(
 pub async fn open_in_memory_split() -> Result<(IdentityStore, DeviceStore), StoreError> {
     let identity = IdentityStore::open_in_memory().await?;
     let conn = Connection::open_in_memory().await?;
-    let device = DeviceStore { conn, identity: identity.clone() };
+    let device = DeviceStore { conn: GatedConnection::new(conn), identity: identity.clone() };
     device.migrate().await?;
     Ok((identity, device))
 }
@@ -612,5 +711,69 @@ mod migration_tests {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
         }
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn suspend_waits_for_in_flight_call() {
+        let store = DeviceStore::open_in_memory().await.unwrap();
+        let conn = store.conn.clone();
+        // A call that holds the connection's blocking thread for a while.
+        let slow = tokio::spawn(async move {
+            conn.call(|c| {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                c.execute_batch("SELECT 1")?;
+                Ok(())
+            })
+            .await
+        });
+        // Give the slow call time to enter the gate.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let started = std::time::Instant::now();
+        store.conn.suspend().await;
+        // suspend() must not return until the in-flight call finished.
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(200),
+            "suspend returned while a call was in flight ({:?})",
+            started.elapsed()
+        );
+        slow.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn suspended_gate_parks_new_calls_until_resume() {
+        let store = DeviceStore::open_in_memory().await.unwrap();
+        store.suspend_for_background().await;
+
+        let conn = store.conn.clone();
+        let parked = tokio::spawn(async move { conn.call(|_c| Ok(42)).await });
+        // The parked call must not complete while suspended.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(!parked.is_finished(), "call ran through a suspended gate");
+
+        store.resume_from_background();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), parked)
+            .await
+            .expect("parked call did not resume")
+            .unwrap()
+            .unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[tokio::test]
+    async fn suspend_and_resume_are_idempotent() {
+        let store = DeviceStore::open_in_memory().await.unwrap();
+        store.suspend_for_background().await;
+        store.suspend_for_background().await;
+        store.resume_from_background();
+        store.resume_from_background();
+        store.conn.call(|_c| Ok(())).await.unwrap();
+        // Resume without a prior suspend is also fine (app launch path).
+        store.resume_from_background();
+        store.conn.call(|_c| Ok(())).await.unwrap();
     }
 }

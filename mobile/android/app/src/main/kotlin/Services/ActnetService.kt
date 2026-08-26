@@ -345,6 +345,20 @@ interface AppCoreProtocol {
      */
     fun setAppActive(active: Boolean)
 
+    /**
+     * iOS-only lifecycle hook (docs/16 §background lifecycle): quiesce the
+     * store and close the WebSocket before process suspension, so iOS never
+     * freezes the app holding a SQLite lock on an App Group file (0xDEAD10CC)
+     * or with a socket the server thinks is live (which suppresses push
+     * wakeups). Android has no shared-container suspension rule and *wants*
+     * background WS delivery, so nothing on this platform calls it — the
+     * method exists for FFI surface parity only.
+     */
+    fun prepareForBackground()
+
+    /** Undo [prepareForBackground]. iOS-only; see there. */
+    fun resumeFromBackground()
+
     // -----------------------------------------------------------------------
     // Groups (docs/03-groups.md §5)
     // -----------------------------------------------------------------------
@@ -496,6 +510,8 @@ class LiveAppCoreProtocol(private val core: AppCore) : AppCoreProtocol {
     override suspend fun nextEvents(): List<IncomingEvent> = core.nextEvents()
     override fun reconnectNow() = core.reconnectNow()
     override fun setAppActive(active: Boolean) = core.setAppActive(active)
+    override fun prepareForBackground() = core.prepareForBackground()
+    override fun resumeFromBackground() = core.resumeFromBackground()
 
     override fun createGroup(title: String, description: String, expirySeconds: UInt): CreatedGroupFfi =
         core.createGroup(title, description, expirySeconds)
@@ -722,6 +738,8 @@ open class MockAppCoreProtocol : AppCoreProtocol {
 
     override fun reconnectNow() {}
     override fun setAppActive(active: Boolean) {}
+    override fun prepareForBackground() {}
+    override fun resumeFromBackground() {}
 
     override fun createGroup(title: String, description: String, expirySeconds: UInt): CreatedGroupFfi =
         CreatedGroupFfi(

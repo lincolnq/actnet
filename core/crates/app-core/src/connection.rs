@@ -27,10 +27,34 @@ pub(crate) async fn reconnect_loop(weak: std::sync::Weak<AppCore>) {
             return;
         };
 
+        // Backgrounded (docs/16 §background lifecycle): stay disconnected —
+        // an open socket makes the server think we're reachable and skip the
+        // push wakeup, and the suspended process couldn't service it anyway.
+        // Park (holding no strong ref) until the platform foregrounds us.
+        {
+            let mut bg = core.backgrounded.subscribe();
+            if *bg.borrow() {
+                core.publish_state(ConnectionState::Disconnected);
+                drop(core);
+                if bg.wait_for(|b| !*b).await.is_err() {
+                    return; // AppCore dropped while parked
+                }
+                backoff_sec = 1;
+                continue;
+            }
+        }
+
         core.publish_state(ConnectionState::Connecting);
 
         match tokio::time::timeout(CONNECT_TIMEOUT, try_connect_ws(&core)).await {
             Ok(Ok(ws)) => {
+                // Backgrounded while the connect attempt was in flight: close
+                // immediately instead of adopting the socket, so we never sit
+                // suspended with a connection the server thinks is live.
+                if *core.backgrounded.borrow() {
+                    ws.close();
+                    continue;
+                }
                 core.publish_state(ConnectionState::Connected);
                 *core.ws.lock().expect("ws mutex poisoned") = Some(ws.clone());
                 let connected_at = std::time::Instant::now();
@@ -175,8 +199,21 @@ async fn try_connect_ws(core: &AppCore) -> Result<net::ws::WsConnection, AppErro
 /// `process_decrypted`) and `AccountJoinedEvent`s (admin push surfaced on
 /// the separate admin queue as `AdminEvent::AccountJoined`).
 async fn run_receive_loop(core: &AppCore, ws: &net::ws::WsConnection) {
+    let mut backgrounded = core.backgrounded.subscribe();
     loop {
         tokio::select! {
+            // The platform is about to suspend the process: close the socket
+            // cleanly so the server drops us from its live-connection map and
+            // push wakeups fire for messages that arrive while suspended
+            // (docs/16 §background lifecycle). The reconnect loop then parks
+            // until `resume_from_background`.
+            res = backgrounded.wait_for(|b| *b) => {
+                if res.is_ok() {
+                    tracing::debug!("[ws] closing socket: entering background");
+                    ws.close();
+                }
+                return;
+            }
             // A group was joined/left/reconciled on this live connection. Re-send
             // the full pseudonym set so the new group starts receiving fan-outs
             // immediately, without waiting for the next reconnect. The connect-time

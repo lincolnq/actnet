@@ -212,6 +212,15 @@ struct ActnetApp: App {
                         // connection on resume so a socket that died while the
                         // app was suspended recovers without a restart.
                         appState.setAppActiveAll(active)
+                        // Background lifecycle (docs/16): on .background, open
+                        // the runtime window; on .active, cancel/undo it. Not
+                        // keyed on `active` — .inactive (app switcher, control
+                        // center) keeps everything running.
+                        if newPhase == .background {
+                            appState.sceneDidEnterBackground()
+                        } else if active {
+                            appState.sceneDidBecomeActive()
+                        }
                         // Safety net for shared images (docs/35): the extension
                         // opens us via avalanche-share://, but if that open is
                         // missed, picking it up on foreground still surfaces the

@@ -273,6 +273,70 @@ The relay's fallback alert body (shown only when the NSE never runs — crash or
 system throttle) changed from "New message" to Signal's hedged wording,
 "You may have new messages".
 
+## Background lifecycle (0xDEAD10CC and the socket handoff)
+
+Status: implemented (Stage 6). Modeled on Signal's teardown — see
+`signal-research/socket-and-suspension-lifecycle.md` for the researched source
+behavior.
+
+Moving the databases into the App Group container (dep 2) made the app subject
+to iOS's shared-container rule: **a process suspended while holding a file or
+SQLite lock on a shared-container file is killed** (`0xDEAD10CC`,
+`RUNNINGBOARD` code 3735883980). Confirmed in the field: nine kills in one day
+on the TestFlight build (crash log 2026-08-26), presenting as "the app resets
+to the first tab" (cold relaunch) — exactly the failure open question 2 below
+anticipated. The trigger is any in-flight write at the freeze instant: the
+reconnect drain after a foreground, the expire reaper, receipt/read-state
+writes. Nothing told the core to stop initiating transactions.
+
+A second, coupled problem: a socket left open across suspension keeps this
+device in the server's live-connection map (`routes/messages.rs` only fires
+the relay push for devices with no live WS), so messages arriving while
+suspended produce **no push and no banner** until the dead TCP path rots.
+Ironically the crashes were masking this — a killed process closes its socket,
+so pushes flowed. Fixing the crash alone would have regressed notifications.
+
+The design ("we're going to background", per Signal):
+
+- **scenePhase → `.background`**: `AppState.sceneDidEnterBackground` takes a
+  `beginBackgroundTask` assertion and changes nothing else. The socket stays
+  open and messages keep processing (with live local banners) for the runtime
+  iOS grants (~30s) — rapid app-switching keeps a warm connection.
+- **Expiration handler** (the only "about to suspend" signal iOS provides):
+  `quiesceForSuspension` calls `prepare_for_background()` per core, in
+  parallel on GCD (never `Task.detached` — blocking FFI must stay off the
+  cooperative pool). Rust side: sets the `backgrounded` watch flag → the
+  receive loop sends a clean WS Close (server drops us from the live map →
+  pushes fire for later messages) and the reconnect loop parks → waits
+  (bounded, 2s) for the state to leave `Connected` → suspends the store gates.
+  Then the assertion is released and the process suspends holding nothing.
+- **Store gate** (`store::GatedConnection`): every SQLite call on both
+  databases holds a read guard; suspension flips a flag (parking new calls)
+  and write-acquires to drain the in-flight call. Exhaustive by construction —
+  future writers are gated automatically. Work parked mid-pipeline holds no
+  lock and resumes where it left off.
+- **scenePhase → `.active`**: end the assertion (if the window is still open,
+  nothing was torn down — the socket never dropped); if the expiration path
+  ran, `resume_from_background()` reopens the gates and reconnects.
+
+Divergences from Signal, both deliberate: no cross-process connection lock
+(our NSE fetches over HTTP, it never takes over a socket), and quiesce is a
+store-layer gate rather than task cancellation (our writers live in tokio
+where Swift can't cancel them; parking achieves the same "quiet at suspension"
+invariant).
+
+Platform scope: iOS-only. Android has no shared-container suspension rule and
+wants background WS delivery; Desktop never suspends. Both get the FFI methods
+for surface parity but never call them.
+
+Known residual risks (accepted): a store call blocked on the cross-process
+busy timeout (NSE contention, ≤5s) can outlive the quiesce wait — rare, both
+processes' transactions are short; and iOS can suspend without any warning
+from some non-`.background` states — those windows are short and hold no
+in-flight work in practice. Server-side WS ping/idle-timeout (tracked in
+docs/02) is the backstop for sockets left by crashes, which no client-side
+protocol can clean up.
+
 ## Staged plan
 
 1. **Shared storage foundation** (deps 1–3): keychain access group, DB → App Group
@@ -289,6 +353,14 @@ system throttle) changed from "New message" to Signal's hedged wording,
    **Implemented but gated off** behind `hasFilteringEntitlement` — blocked on
    the Apple filtering-entitlement grant; interim rewrite model active
    (see "The entitlement gate").
+6. **Background lifecycle** (see above): store suspension gate, clean WS close
+   at background-task expiration, resume on activation. Fixes the `0xDEAD10CC`
+   kills the App Group move introduced *and* the suppressed-push dead zone an
+   open-but-frozen socket causes. **Implemented; verified on device
+   2026-08-26** — messages 10–25s after backgrounding arrived via the live
+   socket, ~35s+ via push → NSE, matching the ~30s OS grant. Crash-free
+   confirmation (no new `Actnet-*.ips` accumulating) needs a few days of
+   normal use to call fully done.
 
 ## Test plan
 
@@ -311,12 +383,24 @@ system throttle) changed from "New message" to Signal's hedged wording,
   in Console.app identify the branch taken.
 - Migration: existing install with DBs in `applicationSupport` upgrades and still
   opens after the move to the App Group container.
+- Stage 6 device checks (launch by tapping the icon — an attached debugger
+  prevents suspension and voids the test): (a) background the app and send
+  messages at ~10s / ~60s / ~5min — the 10s one arrives via the live socket
+  (local banner, no relay log entry), the later ones via push → NSE (relay
+  entry, banner with the NSE's fetch delay); (b) repeat yesterday's
+  reproduction — rapid home-screen round-trips during a message burst across
+  all accounts — then check Settings → Analytics Data: **zero new
+  `Actnet-*.ips`**; (c) reopen within a few seconds of backgrounding —
+  conversation updates instantly with no reconnect flap (the window kept the
+  socket); (d) server logs show a clean `ws:` disconnect ~30s after
+  backgrounding, not a lingering live connection.
 
 ## Open questions / decisions
 
 1. Does the relay change to the APNs payload need project-owner sign-off (privacy
    posture shift from content-free wakeup → generic alert)? — mitigated for now by
    the `APNS_PUSH_MODE` toggle defaulting to `silent`.
-2. **iOS suspension / `0xdead10cc`** (dep 4 caveat): watch crash logs once the
-   alert path is live broadly; if suspension terminations appear, add
-   close/relinquish-on-background rather than relying on short transactions alone.
+2. **iOS suspension / `0xdead10cc`** (dep 4 caveat): RESOLVED — the predicted
+   terminations appeared in the field (nine in one day, 2026-08-26), and the
+   close/relinquish-on-background design landed as Stage 6 ("Background
+   lifecycle" above).

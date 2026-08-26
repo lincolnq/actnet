@@ -132,9 +132,18 @@ pub struct WsConnection {
     inner: Arc<Inner>,
 }
 
+/// Item on the outbound queue: a protobuf frame, or an instruction to close
+/// the socket cleanly (send a WS Close frame and end the writer task). The
+/// explicit variant exists because handle drops alone can't close the socket:
+/// the reader task holds `Inner` alive, so the channel never closes by itself.
+enum Outbound {
+    Frame(Vec<u8>),
+    Shutdown,
+}
+
 struct Inner {
     /// Outbound frame queue, drained by the writer task.
-    outbound: mpsc::UnboundedSender<Vec<u8>>,
+    outbound: mpsc::UnboundedSender<Outbound>,
     /// Incoming `DeliverRequest`s, drained by `next_message`.
     deliveries: Mutex<mpsc::UnboundedReceiver<InboundDelivery>>,
     /// Incoming `GroupDeliverRequest`s, drained by `next_group_message`.
@@ -177,7 +186,7 @@ impl WsConnection {
             .map_err(|e| NetError::WebSocket(e.to_string()))?;
 
         let (sink, stream) = ws.split();
-        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<Outbound>();
         let (delivery_tx, delivery_rx) = mpsc::unbounded_channel::<InboundDelivery>();
         let (group_delivery_tx, group_delivery_rx) =
             mpsc::unbounded_channel::<InboundGroupDelivery>();
@@ -278,6 +287,15 @@ impl WsConnection {
         send_frame(&self.inner.outbound, &frame)
     }
 
+    /// Close the connection cleanly: the writer task sends a WS Close frame and
+    /// exits, the server drops this device from its live-connection map (so
+    /// push wakeups fire for subsequent messages), and the reader ends via the
+    /// close handshake. Idempotent and fire-and-forget — callers observing the
+    /// close should watch `next_message` & co. returning `Ok(None)`.
+    pub fn close(&self) {
+        let _ = self.inner.outbound.send(Outbound::Shutdown);
+    }
+
     /// Send a batch of encrypted messages over the WebSocket and wait for
     /// the server's response. Returns the assigned message IDs in input
     /// order, or an error if the server reported a failure.
@@ -317,7 +335,7 @@ impl WsConnection {
 
 /// Queue a client-initiated keepalive ping (sentinel id). Returns `Err` if the
 /// writer task has already gone away (connection closed).
-fn send_keepalive(outbound: &mpsc::UnboundedSender<Vec<u8>>) -> Result<(), NetError> {
+fn send_keepalive(outbound: &mpsc::UnboundedSender<Outbound>) -> Result<(), NetError> {
     let frame = WsFrame {
         id: KEEPALIVE_PING_ID,
         body: Some(Body::Keepalive(Keepalive {})),
@@ -326,7 +344,7 @@ fn send_keepalive(outbound: &mpsc::UnboundedSender<Vec<u8>>) -> Result<(), NetEr
 }
 
 fn send_frame(
-    outbound: &mpsc::UnboundedSender<Vec<u8>>,
+    outbound: &mpsc::UnboundedSender<Outbound>,
     frame: &WsFrame,
 ) -> Result<(), NetError> {
     let mut buf = Vec::with_capacity(frame.encoded_len());
@@ -334,16 +352,24 @@ fn send_frame(
         .encode(&mut buf)
         .expect("encoding into Vec cannot fail");
     outbound
-        .send(buf)
+        .send(Outbound::Frame(buf))
         .map_err(|_| NetError::WebSocket("connection closed".into()))
 }
 
 fn spawn_writer(
     mut sink: futures_util::stream::SplitSink<WsStream, tungstenite::Message>,
-    mut outbound: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut outbound: mpsc::UnboundedReceiver<Outbound>,
 ) {
     tokio::spawn(async move {
-        while let Some(bytes) = outbound.recv().await {
+        while let Some(item) = outbound.recv().await {
+            let bytes = match item {
+                Outbound::Frame(bytes) => bytes,
+                // Fall through to `sink.close()`, which sends a WS Close frame
+                // so the server tears the connection down immediately (and
+                // fires push wakeups for subsequent messages) instead of
+                // waiting for the dead TCP path to rot.
+                Outbound::Shutdown => break,
+            };
             if sink
                 .send(tungstenite::Message::Binary(bytes.into()))
                 .await
@@ -361,7 +387,7 @@ fn spawn_writer(
 #[allow(clippy::too_many_arguments)]
 fn spawn_reader(
     mut stream: futures_util::stream::SplitStream<WsStream>,
-    outbound: mpsc::UnboundedSender<Vec<u8>>,
+    outbound: mpsc::UnboundedSender<Outbound>,
     delivery_tx: mpsc::UnboundedSender<InboundDelivery>,
     group_delivery_tx: mpsc::UnboundedSender<InboundGroupDelivery>,
     account_joined_tx: mpsc::UnboundedSender<InboundAccountJoined>,

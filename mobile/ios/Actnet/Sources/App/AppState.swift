@@ -1,6 +1,7 @@
 import SwiftUI
 import LinkPresentation
 import UIKit
+import os
 
 enum ServiceMode: String, CaseIterable {
     case mock = "Mock (no server)"
@@ -800,6 +801,109 @@ final class AppState: ObservableObject {
                 core.setAppActive(active: active)
             }
         }
+    }
+
+    // MARK: - Background lifecycle (docs/16 §background lifecycle)
+    //
+    // The App Group databases make us subject to iOS's shared-container rule:
+    // a process suspended while holding a SQLite lock on a shared file is
+    // killed (0xDEAD10CC — this was the nine-crashes-a-day bug). And a socket
+    // left open across suspension makes the server think we're reachable, so
+    // push wakeups never fire. Modeled on Signal's teardown
+    // (docs/signal-research/socket-and-suspension-lifecycle.md): on
+    // .background take a background-task assertion and change nothing — the
+    // socket stays open and messages keep processing for the ~30s iOS grants —
+    // then quiesce in the expiration handler (the only "about to suspend"
+    // signal iOS provides) and release. On .active, undo whichever half
+    // happened.
+
+    /// Token for the post-background runtime window; `.invalid` when no
+    /// window is open.
+    private var backgroundWindowTask: UIBackgroundTaskIdentifier = .invalid
+    /// True once the expiration path has quiesced the cores (store gates
+    /// suspended, sockets closed); the next activation must undo it.
+    private var coresQuiesced = false
+
+    /// Persistent (os_log) lifecycle trail, visible in Console.app while
+    /// untethered — AppLog only prints to the Xcode console, and this path
+    /// runs precisely when no debugger can be attached.
+    private static let lifecycleLog = os.Logger(
+        subsystem: "net.theavalanche.app", category: "background-lifecycle")
+
+    /// scenePhase → .background: open the runtime window. Idempotent.
+    func sceneDidEnterBackground() {
+        guard backgroundWindowTask == .invalid else { return }
+        backgroundWindowTask = UIApplication.shared.beginBackgroundTask(
+            withName: "net.theavalanche.background-window"
+        ) { [weak self] in
+            // Runtime is nearly up (~5s left). Get suspension-safe, then end
+            // the task (endBackgroundTask happens in quiesce's completion).
+            Self.lifecycleLog.info("background window expiring; quiescing")
+            self?.quiesceForSuspension()
+        }
+        Self.lifecycleLog.info(
+            "background window opened (granted=\(self.backgroundWindowTask != .invalid), remaining=\(UIApplication.shared.backgroundTimeRemaining, format: .fixed(precision: 1))s)")
+        if backgroundWindowTask == .invalid {
+            // iOS granted no background time — suspension is imminent.
+            quiesceForSuspension()
+        }
+    }
+
+    /// scenePhase → .active: close the window (if still open and unexpired)
+    /// and resume the cores (if the expiration path already quiesced them).
+    func sceneDidBecomeActive() {
+        endBackgroundWindowTask()
+        if coresQuiesced {
+            coresQuiesced = false
+            let allCores = activeCores()
+            Self.lifecycleLog.info("resuming \(allCores.count) quiesced core(s)")
+            // Cheap and non-blocking, but keep FFI off the main thread.
+            DispatchQueue.global(qos: .userInitiated).async {
+                for core in allCores {
+                    core.resumeFromBackground()
+                }
+            }
+        }
+    }
+
+    /// Close each core's WebSocket and suspend its store gates so the process
+    /// can be frozen holding no shared-container lock. Cores quiesce in
+    /// parallel — each `prepareForBackground` is bounded (milliseconds,
+    /// worst-case a couple of seconds), and the expiration window is ~5s
+    /// total.
+    private func quiesceForSuspension() {
+        let allCores = activeCores()
+        let started = Date()
+        let posts = DispatchGroup()
+        for (i, core) in allCores.enumerated() {
+            posts.enter()
+            // GCD, not Task.detached: blocking FFI must stay off the
+            // cooperative pool (see the listener-loop starvation bug).
+            DispatchQueue.global(qos: .userInitiated).async {
+                core.prepareForBackground()
+                Self.lifecycleLog.info(
+                    "core \(i) quiesced after \(Date().timeIntervalSince(started), format: .fixed(precision: 3))s")
+                posts.leave()
+            }
+        }
+        posts.notify(queue: .main) { [weak self] in
+            guard let self else { return }
+            Self.lifecycleLog.info(
+                "quiesce complete for \(allCores.count) core(s) in \(Date().timeIntervalSince(started), format: .fixed(precision: 3))s; ending background task")
+            self.coresQuiesced = true
+            if self.isAppActive {
+                // We returned to the foreground while quiescing — undo now.
+                self.sceneDidBecomeActive()
+            } else {
+                self.endBackgroundWindowTask()
+            }
+        }
+    }
+
+    private func endBackgroundWindowTask() {
+        guard backgroundWindowTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundWindowTask)
+        backgroundWindowTask = .invalid
     }
 
     func joinServer(serverUrl: String, serverName: String, existingAccountId: String) async throws {

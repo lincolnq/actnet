@@ -1294,6 +1294,15 @@ pub struct AppCore {
     /// `net`'s reader (foreground-only, for battery). Defaults `true` so headless
     /// bots — which never call `set_app_active` — keep their keepalive running.
     pub(crate) app_active: Arc<std::sync::atomic::AtomicBool>,
+    /// True between `prepare_for_background` and `resume_from_background`
+    /// (docs/16 §background lifecycle): the platform expects imminent process
+    /// suspension. While set, the reconnect loop closes/keeps the WS down (so
+    /// the server sees this device offline and push wakeups fire) and the
+    /// store gates are suspended (so the process holds no SQLite lock on the
+    /// App Group files when iOS freezes it — the `0xDEAD10CC` rule). Defaults
+    /// `false`; bots and desktop never set it. Distinct from `app_active`:
+    /// inactive-but-visible (app switcher, control center) keeps processing.
+    pub(crate) backgrounded: tokio::sync::watch::Sender<bool>,
     /// Pending device-linking state on the *existing* (approving) device, set by
     /// `link_create_pairing`/`link_accept_pairing` and consumed by
     /// `link_send_bundle` (docs/04 §4). `None` outside an in-progress link.
@@ -1396,6 +1405,7 @@ impl AppCore {
             reconnect_notify: Arc::new(tokio::sync::Notify::new()),
             groups_changed: Arc::new(tokio::sync::Notify::new()),
             app_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            backgrounded: tokio::sync::watch::channel(false).0,
             link_state: std::sync::Mutex::new(None),
         }
     }
@@ -2717,6 +2727,48 @@ impl AppCore {
         if active {
             self.reconnect_now();
         }
+    }
+
+    /// The platform expects imminent process suspension ("we're going to
+    /// background", docs/16 §background lifecycle — modeled on Signal's
+    /// teardown, docs/signal-research/socket-and-suspension-lifecycle.md §5).
+    /// Blocking but bounded (typically milliseconds); iOS calls this from a
+    /// background task's expiration handler and ends the task when it returns:
+    ///
+    /// 1. Sets `backgrounded` — the reconnect loop closes the WebSocket (a
+    ///    clean WS Close, so the server drops this device from its live map
+    ///    and push wakeups fire for subsequent messages) and stays parked.
+    /// 2. Waits for the socket to actually leave `Connected` (bounded).
+    /// 3. Suspends the store gates: parks new SQLite work and drains the
+    ///    in-flight call, so the process suspends holding no lock on the App
+    ///    Group database files (the `0xDEAD10CC` rule).
+    ///
+    /// Work parked at the gates holds no locks and resumes where it left off
+    /// after `resume_from_background`. Idempotent.
+    pub fn prepare_for_background(&self) {
+        ffi_runtime().block_on(async {
+            self.backgrounded.send_replace(true);
+            // The receive loop notices the flag and closes the socket; wait
+            // (bounded) until the state leaves Connected so we know the close
+            // frame is on the wire before suspending. If we were mid-connect
+            // or backed off, this resolves immediately.
+            let mut rx = self.state_tx.subscribe();
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                rx.wait_for(|s| !matches!(s, ConnectionState::Connected)),
+            )
+            .await;
+            self.store.suspend_for_background().await;
+        });
+    }
+
+    /// Undo `prepare_for_background`: reopen the store gates (parked work
+    /// proceeds) and reconnect the WebSocket. Cheap, idempotent, safe to call
+    /// without a prior suspend (e.g. defensively on launch).
+    pub fn resume_from_background(&self) {
+        self.store.resume_from_background();
+        self.backgrounded.send_replace(false);
+        self.reconnect_notify.notify_one();
     }
 
     /// Suspend until at least one event is available; drain the queue and
